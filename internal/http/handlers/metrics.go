@@ -237,7 +237,8 @@ func TopRoutes(db *gorm.DB) fasthttp.RequestHandler {
 
 type recentEvent struct {
 	ID         uint   `json:"id"`
-	Time       string `json:"time"`
+	Time       string `json:"time"`        // legacy, pre-formatted server time
+	CreatedAt  string `json:"created_at"`  // ISO 8601 UTC for client-side local formatting
 	Method     string `json:"method"`
 	Route      string `json:"route"`
 	Status     int    `json:"status"`
@@ -299,6 +300,7 @@ func RecentEvents(db *gorm.DB) fasthttp.RequestHandler {
 			rows = append(rows, recentEvent{
 				ID:         e.ID,
 				Time:       FormatEventTime(e.CreatedAt, timeFormat),
+				CreatedAt:  e.CreatedAt.UTC().Format(time.RFC3339),
 				Method:     e.Method,
 				Route:      e.Route,
 				Status:     e.Status,

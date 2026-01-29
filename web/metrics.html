@@ -410,6 +410,22 @@
     const dateFormat =
       document.body.getAttribute("data-date-format") || "dd-mm-yyyy";
 
+    /** Format an ISO 8601 timestamp (UTC) as local time only for the realtime table. */
+    function formatRealtimeTime(isoString) {
+      if (!isoString) return "";
+      const d = new Date(isoString);
+      if (isNaN(d.getTime())) return isoString;
+      const h = d.getHours();
+      const m = String(d.getMinutes()).padStart(2, "0");
+      const s = String(d.getSeconds()).padStart(2, "0");
+      if (timeFormat === "24") {
+        return String(h).padStart(2, "0") + ":" + m + ":" + s;
+      }
+      const am = h < 12;
+      const h12 = h === 0 ? 12 : h > 12 ? h - 12 : h;
+      return h12 + ":" + m + ":" + s + (am ? " AM" : " PM");
+    }
+
     function formatBucketLabel(bucket) {
       if (!bucket || bucket.length < 5) return bucket;
       const hour = parseInt(bucket.slice(0, 2), 10);
@@ -920,9 +936,12 @@
             : e.status >= 400
               ? "badge-warning"
               : "badge-primary";
+        const timeStr = e.created_at
+          ? formatRealtimeTime(e.created_at)
+          : (e.time || "");
         tr.innerHTML =
           "<td>" +
-          (e.time || "") +
+          timeStr +
           "</td>" +
           "<td><code>" +
           (e.method || "") +
