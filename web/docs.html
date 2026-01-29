@@ -1,0 +1,94 @@
+{{define "docs"}}
+<div class="page-title">Docs</div>
+<div class="page-subtitle">
+  How to send events to API Insight and scrape Prometheus metrics.
+</div>
+
+<div class="panel">
+  <div class="panel-header">
+    <div>
+      <div class="panel-title">Sending events</div>
+      <div class="panel-subtitle">
+        POST request batches to <code>/v1/events</code> with a Bearer API key.
+      </div>
+    </div>
+  </div>
+  <div class="main-body" style="padding: 0 1rem 1rem">
+    <p style="color: var(--muted); font-size: 0.9rem; margin-bottom: 0.75rem">
+      Use an API key from Settings. Send a <code>POST</code> to your API Insight
+      base URL with path <code>/v1/events</code>, header
+      <code>Authorization: Bearer PROJECT_API_KEY</code>, and
+      <code>Content-Type: application/json</code>.
+    </p>
+    <p style="color: var(--muted); font-size: 0.85rem; margin-bottom: 0.5rem">
+      Request body:
+    </p>
+    <pre
+      style="
+        background: rgba(15, 23, 42, 0.96);
+        border: 1px solid var(--border-soft);
+        border-radius: 0.5rem;
+        padding: 1rem;
+        overflow-x: auto;
+        font-size: 0.8rem;
+        color: var(--text);
+      "
+    ><code>{
+  "events": [
+    {
+      "path": "/api/users",
+      "method": "GET",
+      "status": 200,
+      "duration_ms": 45,
+      "timestamp": "2024-01-28T12:00:00Z",
+      "remote_ip": "192.0.2.1",
+      "attributes": {
+        "env": "production",
+        "region": "us-east-1"
+      }
+    }
+  ]
+}</code></pre>
+    <p style="color: var(--muted); font-size: 0.85rem; margin-top: 0.75rem">
+      The fields shown are required: <code>path</code>,
+      <code>duration_ms</code>, and optionally <code>method</code>,
+      <code>status</code>, <code>timestamp</code>, <code>remote_ip</code>. Any
+      additional data can be added in the <code>attributes</code> block as
+      key/value JSON (e.g. <code>env</code>, <code>region</code>).
+    </p>
+  </div>
+</div>
+
+<div class="panel" style="margin-top: 1rem">
+  <div class="panel-header">
+    <div>
+      <div class="panel-title">Prometheus metrics</div>
+      <div class="panel-subtitle">
+        Project-scoped scrape endpoint using an API key.
+      </div>
+    </div>
+  </div>
+  <div class="main-body" style="padding: 0 1rem 1rem">
+    <p style="color: var(--muted); font-size: 0.9rem; margin-bottom: 0.75rem">
+      To access plaintext Prometheus metrics externally, use:
+    </p>
+    <pre
+      style="
+        background: rgba(15, 23, 42, 0.96);
+        border: 1px solid var(--border-soft);
+        border-radius: 0.5rem;
+        padding: 1rem;
+        overflow-x: auto;
+        font-size: 0.8rem;
+        color: var(--text);
+      "
+    ><code>GET /v1/metrics?api-key=PROJECT_API_KEY</code></pre>
+    <p style="color: var(--muted); font-size: 0.85rem; margin-top: 0.5rem">
+      Replace <code>YOUR_API_KEY</code> with an API key from Settings. The
+      response is standard Prometheus text format and includes only time series
+      whose <code>project</code> label matches the key’s project name. Use this
+      URL as a Prometheus scrape target (e.g. in <code>prometheus.yml</code>).
+    </p>
+  </div>
+</div>
+{{end}}

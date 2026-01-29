@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>API Insight – Admin Login</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="stylesheet" href="/static/app.css" />
+    <script src="https://unpkg.com/lucide@latest"></script>
+  </head>
+  <body>
+    <div class="shell">
+      <div class="card">
+        <div class="glow"></div>
+        <div class="card-inner">
+          <div class="logo">
+            <i data-lucide="database-zap" class="logo-icon"></i>
+            <div class="logo-text">
+              <div class="logo-text-title">API Insight</div>
+              <div class="logo-text-subtitle">Realtime API analytics</div>
+            </div>
+          </div>
+
+          <div class="title">Login</div>
+          <div class="subtitle">Sign in with your username and password</div>
+
+          {{if .Error}}
+          <div class="error">
+            <i data-lucide="alert-circle" class="error-icon"></i>
+            <div>{{.Error}}</div>
+          </div>
+          {{end}}
+
+          <form method="post" action="/login">
+            <div class="field">
+              <label for="username">Username</label>
+              <input
+                id="username"
+                name="username"
+                type="text"
+                autocomplete="username"
+                placeholder="admin"
+                required
+              />
+            </div>
+            <div class="field">
+              <label for="password">Password</label>
+              <input
+                id="password"
+                name="password"
+                type="password"
+                autocomplete="current-password"
+                placeholder="••••••••"
+                required
+              />
+            </div>
+            <button type="submit">
+              <i data-lucide="arrow-right" class="btn-icon"></i>
+              <span>Sign in</span>
+            </button>
+          </form>
+        </div>
+      </div>
+    </div>
+    <script>
+      lucide.createIcons();
+    </script>
+  </body>
+</html>

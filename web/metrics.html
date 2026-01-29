@@ -1,0 +1,1171 @@
+{{define "metrics"}}
+<div class="page-title">Metrics</div>
+<div class="page-subtitle">
+  High-level view of request volume, latency, and error rates across your
+  services.
+</div>
+
+<!-- Realtime metrics: summary cards + realtime table -->
+<div class="metrics-realtime-row">
+  <div class="metrics-cards-grid">
+    <div class="card metrics-card">
+      <div class="card-inner">
+        <div class="card-title">Total requests</div>
+        <div class="card-value" id="card-total-requests">–</div>
+        <div class="card-meta" id="card-total-meta">All requests in period</div>
+      </div>
+    </div>
+    <div class="card metrics-card">
+      <div class="card-inner">
+        <div class="card-title">Average response time</div>
+        <div class="card-value" id="card-avg-duration">–</div>
+        <div class="card-meta" id="card-avg-meta">Average over period</div>
+      </div>
+    </div>
+    <div class="card metrics-card">
+      <div class="card-inner">
+        <div class="card-title">Errors</div>
+        <div class="card-value" id="card-errors-period">–</div>
+        <div class="card-meta" id="card-errors-meta">
+          Status ≥ 400 in period
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="panel metrics-realtime-panel">
+    <div
+      class="panel-header"
+      style="
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+      "
+    >
+      <div>
+        <div class="panel-title">Realtime events</div>
+        <div class="panel-subtitle">
+          Latest events in time order (newest first).
+        </div>
+      </div>
+      <div style="display: flex; align-items: center; gap: 0.5rem">
+        <label
+          for="realtime-limit"
+          style="font-size: 0.75rem; color: var(--muted)"
+          >Show:</label
+        >
+        <select
+          id="realtime-limit"
+          style="
+            font-size: 0.75rem;
+            padding: 0.2rem 0.5rem;
+            border-radius: 0.4rem;
+            border: 1px solid rgba(148, 163, 184, 0.4);
+            background: rgba(15, 23, 42, 0.96);
+            color: var(--text);
+          "
+        >
+          <option value="10" selected>10</option>
+          <option value="20">20</option>
+          <option value="50">50</option>
+          <option value="100">100</option>
+          <option value="200">200</option>
+        </select>
+        <button
+          type="button"
+          id="stream-toggle"
+          class="btn-ghost stream-toggle-btn"
+          style="
+            flex-shrink: 0;
+            padding: 0.4rem;
+            width: 2rem;
+            height: 2rem;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: transparent;
+          "
+          title="Stream events (auto-refresh)"
+        >
+          <i data-lucide="refresh-cw" id="stream-icon"></i>
+        </button>
+      </div>
+    </div>
+    <div style="max-height: 280px; overflow-y: auto">
+      <table class="table" id="realtime-events-table">
+        <thead>
+          <tr>
+            <th>Time</th>
+            <th>Method</th>
+            <th>Route</th>
+            <th style="text-align: center">Status</th>
+            <th style="text-align: right">Duration</th>
+            <th>Project</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td colspan="6" style="color: var(--muted); font-size: 0.8rem">
+              Load once or click Stream to refresh automatically.
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <div
+      style="
+        padding: 0.75rem;
+        padding-bottom: 0;
+        border-top: 1px solid var(--border-soft);
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+      "
+    >
+      <div style="font-size: 0.75rem; color: var(--muted)" id="realtime-info">
+        Page 1
+      </div>
+      <div style="display: flex; gap: 0.5rem">
+        <button
+          type="button"
+          id="realtime-prev"
+          class="btn-ghost"
+          style="font-size: 0.75rem; padding: 0.2rem 0.5rem"
+          disabled
+        >
+          ‹ Prev
+        </button>
+        <button
+          type="button"
+          id="realtime-next"
+          class="btn-ghost"
+          style="font-size: 0.75rem; padding: 0.2rem 0.5rem"
+        >
+          Next ›
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Filter bar: time range + status + attributes -->
+<div class="panel metrics-filter-bar">
+  <div
+    style="display: flex; flex-wrap: wrap; align-items: center; gap: 0.75rem"
+  >
+    <span style="font-size: 0.75rem; color: var(--muted); font-weight: 600"
+      >Filters</span
+    >
+    <label for="chart-range" style="font-size: 0.75rem; color: var(--muted)"
+      >Range:</label
+    >
+    <select
+      id="chart-range"
+      style="
+        font-size: 0.75rem;
+        padding: 0.25rem 0.5rem;
+        border-radius: 0.4rem;
+        border: 1px solid rgba(148, 163, 184, 0.4);
+        background: rgba(15, 23, 42, 0.96);
+        color: var(--text);
+      "
+    >
+      <option value="h0.5">Last 30 min</option>
+      <option value="h1">Last 1 hour</option>
+      <option value="h6">Last 6 hours</option>
+      <option value="h12">Last 12 hours</option>
+      <option value="1">Last 24 hours</option>
+      {{if ge .ChartMaxDays 2}}
+      <option value="2">Last 2 days</option>
+      {{end}} {{if ge .ChartMaxDays 3}}
+      <option value="3">Last 3 days</option>
+      {{end}} {{if ge .ChartMaxDays 5}}
+      <option value="5">Last 5 days</option>
+      {{end}} {{if ge .ChartMaxDays 7}}
+      <option value="7">Last 7 days</option>
+      {{end}} {{if ge .ChartMaxDays 14}}
+      <option value="14">Last 14 days</option>
+      {{end}} {{if ge .ChartMaxDays 30}}
+      <option value="30">Last 30 days</option>
+      {{end}} {{if ge .ChartMaxDays 60}}
+      <option value="60">Last 60 days</option>
+      {{end}} {{if ge .ChartMaxDays 90}}
+      <option value="90">Last 90 days</option>
+      {{end}}
+      <option value="{{.ChartMaxDays}}" selected>
+        Max ({{.ChartMaxDays}} days)
+      </option>
+    </select>
+    <label for="filter-status" style="font-size: 0.75rem; color: var(--muted)"
+      >Status:</label
+    >
+    <select
+      id="filter-status"
+      style="
+        font-size: 0.75rem;
+        padding: 0.25rem 0.5rem;
+        border-radius: 0.4rem;
+        border: 1px solid rgba(148, 163, 184, 0.4);
+        background: rgba(15, 23, 42, 0.96);
+        color: var(--text);
+      "
+    >
+      <option value="">All</option>
+      <option value="success">Success (&lt; 400)</option>
+      <option value="error">Error (≥ 400)</option>
+    </select>
+  </div>
+</div>
+
+<div class="panel">
+  <div class="panel-header">
+    <div>
+      <div class="panel-title">Traffic preview</div>
+      <div class="panel-subtitle">Request volume over time.</div>
+    </div>
+  </div>
+  <canvas id="traffic-chart" height="80"></canvas>
+</div>
+
+<div class="metrics-section" style="margin-top: 1rem">
+  <div class="panel">
+    <div
+      class="panel-header"
+      style="
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+      "
+    >
+      <div>
+        <div class="panel-title">Top endpoints</div>
+        <div class="panel-subtitle">
+          Most requested routes from the current dataset.
+        </div>
+      </div>
+      <div style="display: flex; align-items: center; gap: 0.5rem">
+        <label
+          for="top-routes-limit"
+          style="font-size: 0.75rem; color: var(--muted)"
+          >Show:</label
+        >
+        <select
+          id="top-routes-limit"
+          style="
+            font-size: 0.75rem;
+            padding: 0.2rem 0.5rem;
+            border-radius: 0.4rem;
+            border: 1px solid rgba(148, 163, 184, 0.4);
+            background: rgba(15, 23, 42, 0.96);
+            color: var(--text);
+          "
+        >
+          <option value="10" selected>10</option>
+          <option value="20">20</option>
+          <option value="50">50</option>
+          <option value="100">100</option>
+        </select>
+      </div>
+    </div>
+    <div style="max-height: 450px; overflow-y: auto">
+      <table class="table" id="top-routes-table">
+        <thead>
+          <tr>
+            <th>Route</th>
+            <th style="text-align: left">Status</th>
+            <th style="text-align: right">Requests</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td colspan="3" style="color: var(--muted); font-size: 0.8rem">
+              Loading top endpoints…
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <div
+      style="
+        padding: 0.75rem;
+        padding-bottom: 0;
+        border-top: 1px solid var(--border-soft);
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+      "
+    >
+      <div style="font-size: 0.75rem; color: var(--muted)" id="top-routes-info">
+        Page 1
+      </div>
+      <div style="display: flex; gap: 0.5rem">
+        <button
+          type="button"
+          id="top-routes-prev"
+          class="btn-ghost"
+          style="font-size: 0.75rem; padding: 0.2rem 0.5rem"
+          disabled
+        >
+          ‹ Prev
+        </button>
+        <button
+          type="button"
+          id="top-routes-next"
+          class="btn-ghost"
+          style="font-size: 0.75rem; padding: 0.2rem 0.5rem"
+        >
+          Next ›
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="panel" id="error-rate-panel" style="margin-top: 1rem">
+  <div class="panel-header">
+    <div>
+      <div class="panel-title">Error rate</div>
+      <div class="panel-subtitle">
+        Hourly share of requests with status ≥ 400.
+      </div>
+    </div>
+  </div>
+  <canvas id="error-rate-chart" height="80"></canvas>
+</div>
+
+<div class="panel" id="latency-panel" style="margin-top: 1rem">
+  <div class="panel-header">
+    <div>
+      <div class="panel-title">Latency percentiles</div>
+      <div class="panel-subtitle">
+        Hourly p50, p95, p99 duration (ms).
+        <span
+          class="tooltip-trigger"
+          data-tooltip="p50 = median (half of requests were faster). p95 = 95% of requests were faster. p99 = 99% were faster — useful for spotting slow outliers."
+          aria-label="Percentile explanation"
+          >ⓘ</span
+        >
+      </div>
+    </div>
+  </div>
+  <canvas id="latency-chart" height="80"></canvas>
+</div>
+
+<div
+  id="event-detail-overlay"
+  class="event-detail-overlay"
+  style="display: none"
+>
+  <div class="event-detail-modal">
+    <div class="event-detail-header">
+      <div>
+        <div class="event-detail-title">Request details</div>
+        <div class="event-detail-subtitle" id="event-detail-subtitle"></div>
+      </div>
+      <button
+        type="button"
+        id="event-detail-close"
+        class="btn-ghost"
+        style="font-size: 0.8rem; padding: 0.2rem 0.6rem"
+      >
+        Close
+      </button>
+    </div>
+    <div class="event-detail-main" id="event-detail-main"></div>
+    <div class="event-detail-attributes">
+      <div class="panel-subtitle" style="margin-bottom: 0.5rem">Attributes</div>
+      <table class="table" id="event-detail-attributes-table">
+        <thead>
+          <tr>
+            <th>Key</th>
+            <th>Value</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td colspan="2" style="color: var(--muted); font-size: 0.8rem">
+              No attributes.
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script>
+  (function () {
+    const params = new URLSearchParams(window.location.search);
+    const currentProject = params.get("project") || "";
+    const chartRange = document.getElementById("chart-range");
+    const chartMaxDays = Number("{{.ChartMaxDays}}");
+    let chartRangeValue = chartRange ? chartRange.value : "1";
+    function rangeParam() {
+      if (chartRangeValue.startsWith("h"))
+        return "hours=" + chartRangeValue.slice(1);
+      return "days=" + chartRangeValue;
+    }
+    const filterStatusEl = document.getElementById("filter-status");
+    const timeFormat = document.body.getAttribute("data-time-format") || "12";
+    const dateFormat =
+      document.body.getAttribute("data-date-format") || "dd-mm-yyyy";
+
+    function formatBucketLabel(bucket) {
+      if (!bucket || bucket.length < 5) return bucket;
+      const hour = parseInt(bucket.slice(0, 2), 10);
+      if (timeFormat === "24") return String(hour).padStart(2, "0") + ":00";
+      if (hour === 0) return "12:00 AM";
+      if (hour === 12) return "12:00 PM";
+      if (hour < 12) return hour + ":00 AM";
+      return hour - 12 + ":00 PM";
+    }
+    function formatIsoBucketLabel(isoBucket) {
+      if (!isoBucket) return isoBucket;
+      const d = new Date(isoBucket);
+      if (isNaN(d.getTime())) return isoBucket;
+      const day = String(d.getDate()).padStart(2, "0");
+      const month = String(d.getMonth() + 1).padStart(2, "0");
+      const year = d.getFullYear();
+      let dateStr;
+      if (dateFormat === "mm-dd-yyyy") dateStr = month + "-" + day + "-" + year;
+      else if (dateFormat === "yyyy-mm-dd")
+        dateStr = year + "-" + month + "-" + day;
+      else dateStr = day + "-" + month + "-" + year;
+      let timeStr;
+      if (timeFormat === "24") {
+        timeStr =
+          String(d.getHours()).padStart(2, "0") +
+          ":" +
+          String(d.getMinutes()).padStart(2, "0");
+      } else {
+        const h = d.getHours();
+        const am = h < 12;
+        const h12 = h === 0 ? 12 : h > 12 ? h - 12 : h;
+        timeStr =
+          h12 +
+          ":" +
+          String(d.getMinutes()).padStart(2, "0") +
+          (am ? " AM" : " PM");
+      }
+      return dateStr + " " + timeStr;
+    }
+
+    const errorRatePanel = document.getElementById("error-rate-panel");
+    const latencyPanel = document.getElementById("latency-panel");
+
+    function withFilters(path, overrides) {
+      overrides = overrides || {};
+      let q = path;
+      function add(name, value) {
+        if (value === undefined || value === null) return;
+        if (typeof value === "string" && value === "") return;
+        q +=
+          (q.indexOf("?") === -1 ? "?" : "&") +
+          name +
+          "=" +
+          encodeURIComponent(value);
+      }
+      add("project", currentProject);
+      add(
+        "status",
+        overrides.status !== undefined
+          ? overrides.status
+          : filterStatusEl
+            ? filterStatusEl.value
+            : "",
+      );
+      return q;
+    }
+
+    function sumTrafficSeries(data) {
+      const series = data.series || [];
+      return series.reduce((a, p) => a + (p.count || 0), 0);
+    }
+
+    function loadMetricsCards() {
+      // Use last 24 hours, but never exceed retention.
+      const maxDays = chartMaxDays || 1;
+      const maxHoursFromRetention = Math.max(1, maxDays * 24);
+      const periodHours = Math.min(24, maxHoursFromRetention);
+
+      const totalMeta = document.getElementById("card-total-meta");
+      const avgMeta = document.getElementById("card-avg-meta");
+      const errMeta = document.getElementById("card-errors-meta");
+      const periodLabel =
+        periodHours === 24 ? "Last 24 hours" : "Last " + periodHours + " hours";
+      if (totalMeta) totalMeta.textContent = "Total requests – " + periodLabel;
+      if (avgMeta)
+        avgMeta.textContent = "Average response time – " + periodLabel;
+      if (errMeta) errMeta.textContent = "Status ≥ 400 – " + periodLabel;
+
+      const setText = (id, text) => {
+        const el = document.getElementById(id);
+        if (el) el.textContent = text != null ? String(text) : "–";
+      };
+
+      Promise.all([
+        fetch(
+          withFilters("/v1/metrics/avg-duration?hours=" + periodHours, {
+            status: "",
+          }),
+        )
+          .then((r) =>
+            r.ok ? r.json() : Promise.reject(new Error("avg-duration failed")),
+          )
+          .then((data) =>
+            data && typeof data.avg_duration_ms === "number"
+              ? data.avg_duration_ms
+              : 0,
+          ),
+        fetch(
+          withFilters("/v1/metrics/traffic?hours=" + periodHours, {
+            status: "",
+          }),
+        )
+          .then((r) => r.json())
+          .then(sumTrafficSeries),
+        fetch(
+          withFilters("/v1/metrics/traffic?hours=" + periodHours, {
+            status: "error",
+          }),
+        )
+          .then((r) => r.json())
+          .then(sumTrafficSeries),
+      ])
+        .then(([avgMs, totalCount, errorCount]) => {
+          setText(
+            "card-total-requests",
+            totalCount != null ? totalCount.toLocaleString() : "0",
+          );
+          setText(
+            "card-avg-duration",
+            avgMs ? Math.round(avgMs).toLocaleString() + " ms" : "–",
+          );
+          setText(
+            "card-errors-period",
+            errorCount != null ? errorCount.toLocaleString() : "0",
+          );
+        })
+        .catch((err) => console.error("failed to load metrics cards", err));
+    }
+
+    const canvas = document.getElementById("traffic-chart");
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    let trafficChart = null;
+
+    function loadTrafficChart() {
+      // Fetch time-series traffic data for the current user (optionally filtered by project).
+      fetch(withFilters("/v1/metrics/traffic?" + rangeParam()))
+        .then((res) => res.json())
+        .then((data) => {
+          const series = data.series || [];
+          const labels = series.map((p) =>
+            p.bucket && p.bucket.includes("T")
+              ? formatIsoBucketLabel(p.bucket)
+              : formatBucketLabel(p.bucket),
+          );
+          const counts = series.map((p) => p.count);
+
+          const total = counts.reduce((a, b) => a + b, 0);
+          const totalEl = document.getElementById("demo-requests-total");
+          if (totalEl) totalEl.textContent = total.toString();
+
+          if (trafficChart) {
+            trafficChart.data.labels = labels;
+            trafficChart.data.datasets[0].data = counts;
+            trafficChart.update();
+            return;
+          }
+
+          trafficChart = new Chart(ctx, {
+            type: "line",
+            data: {
+              labels,
+              datasets: [
+                {
+                  label: "Requests",
+                  data: counts,
+                  borderColor: "#60a5fa",
+                  backgroundColor: "rgba(37, 99, 235, 0.15)",
+                  borderWidth: 2,
+                  fill: true,
+                  tension: 0.3,
+                  pointRadius: 0,
+                },
+              ],
+            },
+            options: {
+              plugins: {
+                legend: { display: false },
+              },
+              scales: {
+                x: {
+                  ticks: { color: "#9ca3af" },
+                  grid: { display: false },
+                },
+                y: {
+                  ticks: { color: "#9ca3af" },
+                  grid: {
+                    color: "rgba(55, 65, 81, 0.6)",
+                  },
+                },
+              },
+            },
+          });
+        })
+        .catch((err) => {
+          console.error("failed to load demo metrics", err);
+        });
+    }
+
+    if (chartRange) {
+      chartRange.addEventListener("change", function () {
+        chartRangeValue = chartRange.value;
+        loadTrafficChart();
+        loadErrorRateChart();
+        loadLatencyChart();
+        fetchTopRoutes();
+      });
+    }
+
+    function updateChartVisibility() {
+      const status = filterStatusEl ? filterStatusEl.value : "";
+      if (errorRatePanel) {
+        // Hide error chart when only successful requests are selected.
+        errorRatePanel.style.display = status === "success" ? "none" : "";
+      }
+      // Latency chart remains visible for all filters.
+    }
+
+    function reloadAll() {
+      updateChartVisibility();
+      loadMetricsCards();
+      loadTrafficChart();
+      fetchTopRoutes();
+      fetchRealtimeEvents();
+      loadErrorRateChart();
+      loadLatencyChart();
+    }
+    if (filterStatusEl) filterStatusEl.addEventListener("change", reloadAll);
+
+    const errorRateCanvas = document.getElementById("error-rate-chart");
+    let errorRateChart = null;
+    function loadErrorRateChart() {
+      if (!errorRateCanvas) return;
+      fetch(withFilters("/v1/metrics/error-rate?" + rangeParam()))
+        .then((res) => res.json())
+        .then((data) => {
+          const series = data.series || [];
+          const labels = series.map((p) => formatIsoBucketLabel(p.bucket));
+          const rates = series.map((p) =>
+            p.error_rate != null ? Math.round(p.error_rate * 100) / 100 : 0,
+          );
+          if (errorRateChart) {
+            errorRateChart.data.labels = labels;
+            errorRateChart.data.datasets[0].data = rates;
+            errorRateChart.update();
+            return;
+          }
+          errorRateChart = new Chart(errorRateCanvas.getContext("2d"), {
+            type: "line",
+            data: {
+              labels,
+              datasets: [
+                {
+                  label: "Error rate",
+                  data: rates,
+                  borderColor: "#f87171",
+                  backgroundColor: "rgba(248, 113, 113, 0.15)",
+                  borderWidth: 2,
+                  fill: true,
+                  tension: 0.3,
+                  pointRadius: 0,
+                },
+              ],
+            },
+            options: {
+              plugins: { legend: { display: false } },
+              scales: {
+                x: { ticks: { color: "#9ca3af" }, grid: { display: false } },
+                y: {
+                  ticks: { color: "#9ca3af" },
+                  min: 0,
+                  max: 1,
+                  grid: { color: "rgba(55, 65, 81, 0.6)" },
+                },
+              },
+            },
+          });
+        })
+        .catch((err) => console.error("failed to load error rate", err));
+    }
+
+    const latencyCanvas = document.getElementById("latency-chart");
+    let latencyChart = null;
+    function loadLatencyChart() {
+      if (!latencyCanvas) return;
+      fetch(withFilters("/v1/metrics/latency-percentiles?" + rangeParam()))
+        .then((res) => res.json())
+        .then((data) => {
+          const series = data.series || [];
+          const labels = series.map((p) => formatIsoBucketLabel(p.bucket));
+          const p50 = series.map((p) => p.p50_ms);
+          const p95 = series.map((p) => p.p95_ms);
+          const p99 = series.map((p) => p.p99_ms);
+          if (latencyChart) {
+            latencyChart.data.labels = labels;
+            latencyChart.data.datasets[0].data = p50;
+            latencyChart.data.datasets[1].data = p95;
+            latencyChart.data.datasets[2].data = p99;
+            latencyChart.update();
+            return;
+          }
+          latencyChart = new Chart(latencyCanvas.getContext("2d"), {
+            type: "line",
+            data: {
+              labels,
+              datasets: [
+                {
+                  label: "p50",
+                  data: p50,
+                  borderColor: "#60a5fa",
+                  borderWidth: 2,
+                  fill: false,
+                  tension: 0.3,
+                  pointRadius: 0,
+                },
+                {
+                  label: "p95",
+                  data: p95,
+                  borderColor: "#a78bfa",
+                  borderWidth: 2,
+                  fill: false,
+                  tension: 0.3,
+                  pointRadius: 0,
+                },
+                {
+                  label: "p99",
+                  data: p99,
+                  borderColor: "#f472b6",
+                  borderWidth: 2,
+                  fill: false,
+                  tension: 0.3,
+                  pointRadius: 0,
+                },
+              ],
+            },
+            options: {
+              plugins: { legend: { display: true } },
+              scales: {
+                x: { ticks: { color: "#9ca3af" }, grid: { display: false } },
+                y: {
+                  ticks: { color: "#9ca3af" },
+                  grid: { color: "rgba(55, 65, 81, 0.6)" },
+                },
+              },
+            },
+          });
+        })
+        .catch((err) =>
+          console.error("failed to load latency percentiles", err),
+        );
+    }
+
+    // Initial load.
+    updateChartVisibility();
+    loadMetricsCards();
+    loadTrafficChart();
+    loadErrorRateChart();
+    loadLatencyChart();
+
+    // Top routes: pagination and limit.
+    const topRoutesLimit = document.getElementById("top-routes-limit");
+    const topRoutesPrev = document.getElementById("top-routes-prev");
+    const topRoutesNext = document.getElementById("top-routes-next");
+    const topRoutesInfo = document.getElementById("top-routes-info");
+    let topRoutesOffset = 0;
+
+    function fetchTopRoutes() {
+      const limit = topRoutesLimit ? parseInt(topRoutesLimit.value) : 10;
+      const base =
+        "/v1/metrics/top-routes?" +
+        rangeParam() +
+        "&limit=" +
+        limit +
+        "&offset=" +
+        topRoutesOffset;
+      fetch(withFilters(base))
+        .then((res) => res.json())
+        .then((data) => {
+          const routes = data.routes || [];
+          const tbody = document.querySelector("#top-routes-table tbody");
+          if (!tbody) return;
+
+          tbody.innerHTML = "";
+          routes.forEach((row) => {
+            const tr = document.createElement("tr");
+            const routeTd = document.createElement("td");
+            routeTd.textContent = row.route || "/";
+
+            const statusTd = document.createElement("td");
+            statusTd.style.textAlign = "left";
+            const statuses = row.statuses || [];
+            if (statuses.length > 0) {
+              statuses.forEach((s, idx) => {
+                const status = s.status != null ? s.status : 0;
+                const count = s.count != null ? s.count : 0;
+                const statusClass =
+                  status >= 500
+                    ? "badge-danger"
+                    : status >= 400
+                      ? "badge-warning"
+                      : "badge-primary";
+                const badge = document.createElement("span");
+                badge.className = "badge " + statusClass;
+                badge.textContent = String(status);
+                statusTd.appendChild(badge);
+                const countSpan = document.createElement("span");
+                countSpan.style.color = "var(--muted)";
+                countSpan.textContent = " ×" + count;
+                statusTd.appendChild(countSpan);
+                if (idx < statuses.length - 1) {
+                  statusTd.appendChild(document.createTextNode(" "));
+                }
+              });
+            } else {
+              statusTd.textContent = "–";
+            }
+
+            const countTd = document.createElement("td");
+            countTd.style.textAlign = "right";
+            countTd.textContent =
+              row.count != null ? row.count.toString() : "0";
+
+            tr.appendChild(routeTd);
+            tr.appendChild(statusTd);
+            tr.appendChild(countTd);
+            tbody.appendChild(tr);
+          });
+
+          const topRouteEl = document.getElementById("demo-top-route");
+          if (topRouteEl && routes.length > 0) {
+            topRouteEl.textContent = routes[0].route || "/";
+          }
+
+          // Update pagination controls.
+          const currentPage = Math.floor(topRoutesOffset / limit) + 1;
+          const totalPages = Math.ceil((data.total || 0) / limit);
+          if (topRoutesInfo) {
+            topRoutesInfo.textContent =
+              "Page " + currentPage + " of " + (totalPages || 1);
+          }
+          if (topRoutesPrev) {
+            topRoutesPrev.disabled = topRoutesOffset === 0;
+          }
+          if (topRoutesNext) {
+            topRoutesNext.disabled = !data.has_more;
+          }
+        })
+        .catch((err) => {
+          console.error("failed to load top routes", err);
+        });
+    }
+
+    if (topRoutesLimit) {
+      topRoutesLimit.addEventListener("change", function () {
+        topRoutesOffset = 0;
+        fetchTopRoutes();
+      });
+    }
+    if (topRoutesPrev) {
+      topRoutesPrev.addEventListener("click", function () {
+        const limit = topRoutesLimit ? parseInt(topRoutesLimit.value) : 10;
+        topRoutesOffset = Math.max(0, topRoutesOffset - limit);
+        fetchTopRoutes();
+      });
+    }
+    if (topRoutesNext) {
+      topRoutesNext.addEventListener("click", function () {
+        const limit = topRoutesLimit ? parseInt(topRoutesLimit.value) : 10;
+        topRoutesOffset += limit;
+        fetchTopRoutes();
+      });
+    }
+    fetchTopRoutes();
+
+    // Realtime events: load once and optional streaming (polling).
+    const realtimeTbody = document.querySelector(
+      "#realtime-events-table tbody",
+    );
+    const streamToggle = document.getElementById("stream-toggle");
+    const streamIcon = document.getElementById("stream-icon");
+
+    function renderRealtimeEvents(events) {
+      if (!realtimeTbody) return;
+      realtimeTbody.innerHTML = "";
+      if (!events || events.length === 0) {
+        const tr = document.createElement("tr");
+        tr.innerHTML =
+          '<td colspan="6" style="color: var(--muted); font-size: 0.8rem;">No events yet.</td>';
+        realtimeTbody.appendChild(tr);
+        return;
+      }
+      events.forEach((e) => {
+        const tr = document.createElement("tr");
+        tr.setAttribute("data-event-id", e.id);
+        const statusClass =
+          e.status >= 500
+            ? "badge-danger"
+            : e.status >= 400
+              ? "badge-warning"
+              : "badge-primary";
+        tr.innerHTML =
+          "<td>" +
+          (e.time || "") +
+          "</td>" +
+          "<td><code>" +
+          (e.method || "") +
+          "</code></td>" +
+          "<td>" +
+          (e.route || "/") +
+          "</td>" +
+          '<td style="text-align:center;"><span class="badge ' +
+          statusClass +
+          '">' +
+          e.status +
+          "</span></td>" +
+          '<td style="text-align:right;">' +
+          (e.duration_ms != null ? e.duration_ms + " ms" : "–") +
+          "</td>" +
+          "<td>" +
+          (e.project || "–") +
+          "</td>";
+        realtimeTbody.appendChild(tr);
+      });
+    }
+
+    const realtimeLimit = document.getElementById("realtime-limit");
+    const realtimePrev = document.getElementById("realtime-prev");
+    const realtimeNext = document.getElementById("realtime-next");
+    const realtimeInfo = document.getElementById("realtime-info");
+    const eventDetailOverlay = document.getElementById("event-detail-overlay");
+    const eventDetailSubtitle = document.getElementById(
+      "event-detail-subtitle",
+    );
+    const eventDetailMain = document.getElementById("event-detail-main");
+    const eventDetailAttributesTable = document.getElementById(
+      "event-detail-attributes-table",
+    );
+    const eventDetailClose = document.getElementById("event-detail-close");
+    let realtimeOffset = 0;
+
+    function fetchRealtimeEvents() {
+      const limit = realtimeLimit ? parseInt(realtimeLimit.value) : 10;
+      fetch(
+        withFilters(
+          "/v1/metrics/recent?limit=" + limit + "&offset=" + realtimeOffset,
+        ),
+      )
+        .then((res) => res.json())
+        .then((data) => {
+          renderRealtimeEvents(data.events || []);
+
+          // Update pagination controls (disable if streaming).
+          const isStreaming = streamInterval !== null;
+          const currentPage = Math.floor(realtimeOffset / limit) + 1;
+          const totalPages = Math.ceil((data.total || 0) / limit);
+          if (realtimeInfo) {
+            realtimeInfo.textContent =
+              "Page " + currentPage + " of " + (totalPages || 1);
+          }
+          if (realtimePrev) {
+            realtimePrev.disabled = isStreaming || realtimeOffset === 0;
+          }
+          if (realtimeNext) {
+            realtimeNext.disabled = isStreaming || !data.has_more;
+          }
+        })
+        .catch((err) => {
+          console.error("failed to load recent events", err);
+        });
+    }
+
+    // Load once on page load.
+    fetchRealtimeEvents();
+
+    // Update limit when dropdown changes (reset to page 1, restart stream if active).
+    let streamInterval = null;
+    if (realtimeLimit) {
+      realtimeLimit.addEventListener("change", function () {
+        realtimeOffset = 0;
+        fetchRealtimeEvents();
+        if (streamInterval) {
+          clearInterval(streamInterval);
+          streamInterval = setInterval(fetchRealtimeEvents, 2000);
+        }
+      });
+    }
+
+    if (realtimePrev) {
+      realtimePrev.addEventListener("click", function () {
+        const limit = realtimeLimit ? parseInt(realtimeLimit.value) : 10;
+        realtimeOffset = Math.max(0, realtimeOffset - limit);
+        fetchRealtimeEvents();
+        // Stop streaming when manually paginating.
+        if (streamInterval) {
+          clearInterval(streamInterval);
+          streamInterval = null;
+          if (streamIcon) streamIcon.classList.remove("stream-icon-spin");
+        }
+      });
+    }
+
+    if (realtimeNext) {
+      realtimeNext.addEventListener("click", function () {
+        const limit = realtimeLimit ? parseInt(realtimeLimit.value) : 10;
+        realtimeOffset += limit;
+        fetchRealtimeEvents();
+        // Stop streaming when manually paginating.
+        if (streamInterval) {
+          clearInterval(streamInterval);
+          streamInterval = null;
+          if (streamIcon) streamIcon.classList.remove("stream-icon-spin");
+        }
+      });
+    }
+
+    streamToggle.addEventListener("click", function () {
+      if (streamInterval) {
+        clearInterval(streamInterval);
+        streamInterval = null;
+        if (streamIcon) streamIcon.classList.remove("stream-icon-spin");
+        // Re-enable pagination buttons.
+        if (realtimePrev) realtimePrev.disabled = realtimeOffset === 0;
+        if (realtimeNext) {
+          // Re-check has_more on next fetch
+          fetchRealtimeEvents();
+        }
+      } else {
+        // Reset to page 1 when starting stream.
+        realtimeOffset = 0;
+        if (streamIcon) streamIcon.classList.add("stream-icon-spin");
+        // Disable pagination buttons when streaming.
+        if (realtimePrev) realtimePrev.disabled = true;
+        if (realtimeNext) realtimeNext.disabled = true;
+        fetchRealtimeEvents();
+        streamInterval = setInterval(fetchRealtimeEvents, 2000);
+      }
+    });
+
+    function openEventDetail(id) {
+      if (!eventDetailOverlay) return;
+      eventDetailOverlay.style.display = "flex";
+      eventDetailMain.innerHTML =
+        '<div style="color: var(--muted); font-size: 0.8rem;">Loading…</div>';
+      if (eventDetailAttributesTable) {
+        const tbody = eventDetailAttributesTable.querySelector("tbody");
+        if (tbody) {
+          tbody.innerHTML =
+            '<tr><td colspan="2" style="color: var(--muted); font-size: 0.8rem;">Loading…</td></tr>';
+        }
+      }
+
+      fetch("/v1/metrics/event/" + id)
+        .then((res) => {
+          if (!res.ok) throw new Error("failed to load event");
+          return res.json();
+        })
+        .then((data) => {
+          const when =
+            data.created_at_display ||
+            (data.created_at
+              ? new Date(data.created_at).toLocaleString()
+              : "–");
+          if (eventDetailSubtitle) {
+            eventDetailSubtitle.textContent = when;
+          }
+
+          if (eventDetailMain) {
+            eventDetailMain.innerHTML =
+              '<div class="event-detail-main-grid">' +
+              '<div><div class="label">Time</div><div>' +
+              (data.created_at_display || "–") +
+              "</div></div>" +
+              '<div><div class="label">Method</div><div><code>' +
+              (data.method || "") +
+              "</code></div></div>" +
+              '<div><div class="label">Route</div><div>' +
+              (data.route || "/") +
+              "</div></div>" +
+              '<div><div class="label">Status</div><div>' +
+              (data.status != null ? data.status : "–") +
+              "</div></div>" +
+              '<div><div class="label">Duration</div><div>' +
+              (data.duration_ms != null ? data.duration_ms + " ms" : "–") +
+              "</div></div>" +
+              '<div><div class="label">Project</div><div>' +
+              (data.project || "–") +
+              "</div></div>" +
+              '<div><div class="label">Remote IP</div><div>' +
+              (data.remote_ip || "–") +
+              "</div></div>" +
+              "</div>";
+          }
+
+          if (eventDetailAttributesTable) {
+            const tbody = eventDetailAttributesTable.querySelector("tbody");
+            if (!tbody) return;
+            const attrs = data.attributes || {};
+            const keys = Object.keys(attrs);
+            if (keys.length === 0) {
+              tbody.innerHTML =
+                '<tr><td colspan="2" style="color: var(--muted); font-size: 0.8rem;">No attributes.</td></tr>';
+              return;
+            }
+            tbody.innerHTML = "";
+            keys.sort().forEach((k) => {
+              const v = attrs[k];
+              const tr = document.createElement("tr");
+              tr.innerHTML =
+                "<td>" +
+                k +
+                "</td><td><code>" +
+                (typeof v === "object" ? JSON.stringify(v) : String(v)) +
+                "</code></td>";
+              tbody.appendChild(tr);
+            });
+          }
+        })
+        .catch((err) => {
+          console.error(err);
+          if (eventDetailMain) {
+            eventDetailMain.innerHTML =
+              '<div style="color: var(--muted); font-size: 0.8rem;">Failed to load event details.</div>';
+          }
+        });
+    }
+
+    if (eventDetailClose && eventDetailOverlay) {
+      eventDetailClose.addEventListener("click", function () {
+        eventDetailOverlay.style.display = "none";
+      });
+      eventDetailOverlay.addEventListener("click", function (e) {
+        if (e.target === eventDetailOverlay) {
+          eventDetailOverlay.style.display = "none";
+        }
+      });
+    }
+
+    if (realtimeTbody) {
+      realtimeTbody.addEventListener("click", function (e) {
+        const tr = e.target.closest("tr[data-event-id]");
+        if (!tr) return;
+        const id = tr.getAttribute("data-event-id");
+        if (!id) return;
+        openEventDetail(id);
+      });
+    }
+  })();
+</script>
+{{end}}

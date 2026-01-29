@@ -1,0 +1,126 @@
+{{define "users"}}
+<div class="page-title">Users</div>
+<div class="page-subtitle">
+  Invite additional users who can sign in to this workspace.
+</div>
+
+<div class="panel" style="margin-bottom: 1rem">
+  <div class="panel-header">
+    <div>
+      <div class="panel-title">Add user</div>
+      <div class="panel-subtitle">Create a user with dashboard access.</div>
+    </div>
+  </div>
+  <form method="post" action="/admin/users/create">
+    <div class="form-row">
+      <div class="field">
+        <label for="user-username">Username</label>
+        <input
+          id="user-username"
+          name="username"
+          placeholder="username"
+          required
+        />
+      </div>
+      <div class="field">
+        <label for="user-role">Role</label>
+        <select id="user-role" name="is_admin">
+          <option value="false">Regular User</option>
+          <option value="true">Admin</option>
+        </select>
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="field">
+        <label for="user-password">Password</label>
+        <input
+          id="user-password"
+          name="password"
+          type="password"
+          placeholder="••••••••"
+          required
+        />
+      </div>
+    </div>
+    <button class="btn-primary" type="submit">
+      <i data-lucide="plus" class="icon"></i>
+      <span>Create user</span>
+    </button>
+  </form>
+</div>
+
+<div class="panel">
+  <div class="panel-header">
+    <div>
+      <div class="panel-title">Existing users</div>
+      <div class="panel-subtitle">Manage who can log in to this dashboard.</div>
+    </div>
+  </div>
+  <table class="table">
+    <thead>
+      <tr>
+        <th>Username</th>
+        <th>Role</th>
+        <th style="text-align: right">Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{if .Users}} {{range .Users}}
+      <tr>
+        <td>{{.Username}}</td>
+        <td>
+          {{if .IsAdmin}}
+          <span class="badge badge-primary">Admin</span>
+          {{else}}
+          <span class="badge badge-muted">User</span>
+          {{end}}
+        </td>
+        <td style="text-align: right">
+          {{if eq .Username $.AdminUser}}
+          <span style="color: var(--muted); font-size: 0.75rem">Protected</span>
+          {{else}}
+          <form
+            method="post"
+            action="/admin/users/{{.ID}}/reset-password"
+            class="inline-reset-form"
+            onsubmit="return confirm('Reset password for {{.Username}}?');"
+          >
+            <input
+              type="password"
+              name="password"
+              placeholder="New password"
+              required
+            />
+            <button type="submit" class="btn-ghost">Reset</button>
+          </form>
+          <form
+            method="post"
+            action="/admin/users/{{.ID}}/delete"
+            style="display: inline; margin-left: 0.3rem"
+            onsubmit="return confirm('Delete user {{.Username}}?');"
+          >
+            <button
+              type="submit"
+              class="btn-ghost pill-danger"
+              style="font-size: 0.75rem; padding: 0.2rem 0.5rem"
+            >
+              Delete
+            </button>
+          </form>
+          {{end}}
+        </td>
+      </tr>
+      {{end}} {{else}}
+      <tr>
+        <td
+          colspan="3"
+          style="color: var(--muted); font-size: 0.8rem; text-align: center"
+        >
+          No users found. Create one above.
+        </td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+</div>
+{{end}}

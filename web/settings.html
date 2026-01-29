@@ -1,0 +1,184 @@
+{{define "settings"}}
+<div class="page-title">Settings</div>
+<div class="page-subtitle">
+  Manage projects and their ingestion keys for sending traffic analytics from your services.
+</div>
+
+<div class="panel" style="margin-bottom: 1rem;">
+  <div class="panel-header">
+    <div>
+      <div class="panel-title">Create project</div>
+      <div class="panel-subtitle">Set up a new project and its ingestion key.</div>
+    </div>
+  </div>
+  <form method="post" action="/admin/apikeys/create">
+    <div class="form-row">
+      <div class="field">
+        <label for="service-name">Project name</label>
+        <input id="service-name" name="name" placeholder="e.g. payments-api" required />
+      </div>
+      <div class="field">
+        <label for="environment">Environment</label>
+        <select id="environment" name="environment" required>
+          <option value="prod">Production</option>
+          <option value="staging">Staging</option>
+          <option value="dev">Development</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="retention-days">Retention (days)</label>
+        <input
+          id="retention-days"
+          name="retention_days"
+          type="number"
+          min="1"
+          max="{{.MaxRetentionDays}}"
+          value="{{.MaxRetentionDays}}"
+          required
+        />
+        <div style="color: var(--muted-soft); font-size: 0.75rem; margin-top: 0.25rem;">
+          Max {{.MaxRetentionDays}} days (configured via environment).
+        </div>
+      </div>
+    </div>
+    <button class="btn-primary" type="submit">
+      <i data-lucide="plus" class="icon"></i>
+      <span>Generate key</span>
+    </button>
+  </form>
+</div>
+
+<div class="panel" style="margin-bottom: 1rem;">
+  <div class="panel-header">
+    <div>
+      <div class="panel-title">Projects</div>
+      <div class="panel-subtitle">Each project has its own ingestion key (Bearer token).</div>
+    </div>
+  </div>
+  <table class="table">
+    <thead>
+      <tr>
+        <th>Project</th>
+        <th>Environment</th>
+        <th>Retention</th>
+        <th>Key</th>
+        <th>Status</th>
+        <th style="text-align:right;">Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{if .APIKeys}}
+        {{range .APIKeys}}
+        <tr>
+          <td>{{.Name}}</td>
+          <td><span class="badge badge-muted">{{.Environment}}</span></td>
+          <td>
+            {{if gt .RetentionDays 0}}
+              {{.RetentionDays}} days
+            {{else}}
+              Default ({{$.MaxRetentionDays}} days)
+            {{end}}
+          </td>
+          <td><code>{{.Key}}</code></td>
+          <td>
+            {{if .Active}}
+              <span class="badge badge-primary">Active</span>
+            {{else}}
+              <span class="badge badge-muted">Inactive</span>
+            {{end}}
+          </td>
+          <td style="text-align:right;">
+            {{if and $.InternalAPIKey (eq .Key $.InternalAPIKey)}}
+              <span style="color: var(--muted); font-size: 0.75rem;">Protected</span>
+            {{else}}
+              {{if .Active}}
+                <form method="post" action="/admin/apikeys/set-active?id={{.ID}}&active=false" style="display:inline; margin-right:0.3rem;">
+                  <button type="submit" class="btn-ghost" style="font-size:0.75rem; padding:0.2rem 0.5rem;">Deactivate</button>
+                </form>
+              {{else}}
+                <form method="post" action="/admin/apikeys/set-active?id={{.ID}}&active=true" style="display:inline; margin-right:0.3rem;">
+                  <button type="submit" class="btn-ghost" style="font-size:0.75rem; padding:0.2rem 0.5rem;">Activate</button>
+                </form>
+              {{end}}
+              <form method="post" action="/admin/apikeys/delete?id={{.ID}}" style="display:inline;" onsubmit="return confirm('Delete API key {{.Name}}?');">
+                <button type="submit" class="btn-ghost pill-danger" style="font-size:0.75rem; padding:0.2rem 0.5rem;">Delete</button>
+              </form>
+            {{end}}
+          </td>
+        </tr>
+        {{end}}
+      {{else}}
+        <tr>
+          <td colspan="5" style="color: var(--muted); font-size: 0.8rem; text-align:center;">
+            No projects found. Create one above.
+          </td>
+        </tr>
+      {{end}}
+    </tbody>
+  </table>
+</div>
+
+<div class="panel" style="margin-bottom: 1rem;">
+  <div class="panel-header">
+    <div>
+      <div class="panel-title">Display</div>
+      <div class="panel-subtitle">Time and date format used on the dashboard.</div>
+    </div>
+  </div>
+  <form method="post" action="/settings/display">
+    <div class="form-row">
+      <div class="field">
+        <label for="time-format">Time format</label>
+        <select id="time-format" name="time_format">
+          <option value="12" {{if or (eq .TimeFormat "12") (not .TimeFormat)}}selected{{end}}>12-hour (e.g. 3:04 PM)</option>
+          <option value="24" {{if eq .TimeFormat "24"}}selected{{end}}>24-hour (e.g. 15:04)</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="date-format">Date format</label>
+        <select id="date-format" name="date_format">
+          <option value="dd-mm-yyyy" {{if or (eq .DateFormat "dd-mm-yyyy") (not .DateFormat)}}selected{{end}}>dd-mm-yyyy</option>
+          <option value="mm-dd-yyyy" {{if eq .DateFormat "mm-dd-yyyy"}}selected{{end}}>mm-dd-yyyy</option>
+          <option value="yyyy-mm-dd" {{if eq .DateFormat "yyyy-mm-dd"}}selected{{end}}>yyyy-mm-dd</option>
+        </select>
+      </div>
+    </div>
+    <button class="btn-primary" type="submit">
+      <span>Save display settings</span>
+    </button>
+  </form>
+</div>
+
+{{if ne .Username .AdminUser}}
+<div class="panel">
+  <div class="panel-header">
+    <div>
+      <div class="panel-title">Change your password</div>
+      <div class="panel-subtitle">Update your console password for this workspace.</div>
+    </div>
+  </div>
+  <form method="post" action="/settings/password">
+    <div class="form-row">
+      <div class="field">
+        <label for="current-password">Current password</label>
+        <input id="current-password" name="current_password" type="password" autocomplete="current-password" required />
+      </div>
+      <div class="field">
+        <label for="new-password">New password</label>
+        <input id="new-password" name="new_password" type="password" autocomplete="new-password" required />
+      </div>
+      <div class="field">
+        <label for="confirm-password">Confirm new password</label>
+        <input id="confirm-password" name="confirm_password" type="password" autocomplete="new-password" required />
+      </div>
+    </div>
+    <button class="btn-primary" type="submit">
+      <span>Update password</span>
+    </button>
+    <div style="margin-top: 0.5rem; font-size: 0.75rem; color: var(--muted-soft);">
+      The bootstrap admin user (from APP_ADMIN_USER / APP_ADMIN_PASSWORD) must be changed via environment configuration.
+    </div>
+  </form>
+</div>
+{{end}}
+{{end}}

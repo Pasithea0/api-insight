@@ -1,0 +1,109 @@
+{{define "layout"}}
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>API Insight – {{.Title}}</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="stylesheet" href="/static/app.css">
+    <script src="https://unpkg.com/lucide@latest"></script>
+  </head>
+  <body data-time-format="{{.TimeFormat}}" data-date-format="{{.DateFormat}}">
+    <div class="app" id="app-root">
+      <aside class="sidebar">
+        <div class="logo">
+          <i data-lucide="database-zap" class="logo-icon"></i>
+          <div>
+            <div class="logo-text-title">API Insight</div>
+            <div class="logo-text-subtitle">Realtime API analytics</div>
+          </div>
+        </div>
+
+        <div class="nav-section-label">Projects</div>
+        <nav class="nav-list">
+          <a href="/metrics" class="nav-item {{if and (eq .ActivePage "metrics") (not .ActiveProject)}}active{{end}}">
+            <span class="nav-icon"><i data-lucide="activity"></i></span>
+            <span>All traffic</span>
+            <span class="nav-badge">Live</span>
+          </a>
+          {{range .Projects}}
+          <a href="/metrics?project={{.Name}}" class="nav-item {{if and (eq $.ActivePage "metrics") (eq $.ActiveProject .Name)}}active{{end}}">
+            <span class="nav-icon"><i data-lucide="activity"></i></span>
+            <span>{{.Name}}</span>
+            <span class="nav-badge">{{.Environment}}</span>
+          </a>
+          {{end}}
+        </nav>
+
+        <div class="nav-section-label">Workspace</div>
+        <nav class="nav-list">
+          <a href="/docs" class="nav-item {{if eq .ActivePage "docs"}}active{{end}}">
+            <span class="nav-icon"><i data-lucide="book-open"></i></span>
+            <span>Docs</span>
+          </a>
+          <a href="/settings" class="nav-item {{if eq .ActivePage "settings"}}active{{end}}">
+            <span class="nav-icon"><i data-lucide="settings"></i></span>
+            <span>Settings</span>
+          </a>
+          {{if .IsAdmin}}
+          <a href="/users" class="nav-item {{if eq .ActivePage "users"}}active{{end}}">
+            <span class="nav-icon"><i data-lucide="users"></i></span>
+            <span>Users</span>
+            <span class="nav-badge">Admin</span>
+          </a>
+          {{end}}
+        </nav>
+
+        <div class="sidebar-footer">
+          <div class="sidebar-footer-text">
+            <div>Signed in as <strong>{{if .Username}}{{.Username}}{{else}}user{{end}}</strong></div>
+            <div style="color: var(--muted-soft);">Local development</div>
+          </div>
+          <form method="post" action="/logout">
+            <button type="submit" class="sidebar-footer-logout" title="Log out">
+              <i data-lucide="log-out" class="icon"></i>
+            </button>
+          </form>
+        </div>
+      </aside>
+
+      <main class="main">
+        <header class="main-header">
+          <div class="breadcrumbs">
+            Dashboard /
+            <span>{{.Breadcrumb}}</span>
+          </div>
+          <div class="header-right">
+            <button type="button" class="header-menu-btn" id="header-menu-btn" aria-label="Toggle navigation">
+              <i data-lucide="menu"></i>
+            </button>
+          </div>
+        </header>
+
+        <div class="main-body">
+          {{if eq .PageTemplate "metrics"}}{{template "metrics" .}}{{end}}
+          {{if eq .PageTemplate "docs"}}{{template "docs" .}}{{end}}
+          {{if eq .PageTemplate "settings"}}{{template "settings" .}}{{end}}
+          {{if eq .PageTemplate "users"}}{{template "users" .}}{{end}}
+        </div>
+      </main>
+    </div>
+    <script>
+      lucide.createIcons();
+      (function () {
+        var app = document.getElementById('app-root');
+        var menuBtn = document.getElementById('header-menu-btn');
+        if (app && menuBtn) {
+          menuBtn.addEventListener('click', function () {
+            if (app.classList.contains('sidebar-open')) {
+              app.classList.remove('sidebar-open');
+            } else {
+              app.classList.add('sidebar-open');
+            }
+          });
+        }
+      })();
+    </script>
+  </body>
+</html>
+{{end}}
