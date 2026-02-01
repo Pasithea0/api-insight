@@ -430,25 +430,16 @@ func AttributeKeys(db *gorm.DB) fasthttp.RequestHandler {
 		if !ok {
 			return
 		}
-		project := string(ctx.QueryArgs().Peek("project"))
 		cutoff, _ := parseRange(ctx)
 
 		type keyRow struct {
 			Key string `json:"key"`
 		}
 		var rows []keyRow
-		var err error
-		if project != "" {
-			err = db.Raw(
-				"SELECT DISTINCT je.key AS key FROM events, jsonb_each(events.attributes::jsonb) je WHERE events.user_id = ? AND events.project = ? AND events.created_at >= ?",
-				strconv.Itoa(int(user.ID)), project, cutoff,
-			).Scan(&rows).Error
-		} else {
-			err = db.Raw(
-				"SELECT DISTINCT je.key AS key FROM events, jsonb_each(events.attributes::jsonb) je WHERE events.user_id = ? AND events.created_at >= ?",
-				strconv.Itoa(int(user.ID)), cutoff,
-			).Scan(&rows).Error
-		}
+		err := db.Raw(
+			"SELECT DISTINCT je.key AS key FROM events, jsonb_each(events.attributes::jsonb) je WHERE events.user_id = ? AND events.created_at >= ?",
+			strconv.Itoa(int(user.ID)), cutoff,
+		).Scan(&rows).Error
 		if err != nil {
 			errResponse(ctx, fasthttp.StatusInternalServerError, "failed to query attribute keys")
 			return
@@ -485,7 +476,7 @@ func AttributeValues(db *gorm.DB) fasthttp.RequestHandler {
 		var rows []valRow
 		if project != "" {
 			err := db.Raw(
-				"SELECT DISTINCT events.attributes::jsonb ->> ? AS value FROM events WHERE events.user_id = ? AND events.project = ? AND events.created_at >= ? AND events.attributes::jsonb ? ?",
+				"SELECT DISTINCT events.attributes::jsonb ->> ? AS value FROM events WHERE events.user_id = ? AND events.project = ? AND events.created_at >= ? AND jsonb_exists(events.attributes::jsonb, ?)",
 				attrKey, strconv.Itoa(int(user.ID)), project, cutoff, attrKey,
 			).Scan(&rows).Error
 			if err != nil {
@@ -494,7 +485,7 @@ func AttributeValues(db *gorm.DB) fasthttp.RequestHandler {
 			}
 		} else {
 			err := db.Raw(
-				"SELECT DISTINCT events.attributes::jsonb ->> ? AS value FROM events WHERE events.user_id = ? AND events.created_at >= ? AND events.attributes::jsonb ? ?",
+				"SELECT DISTINCT events.attributes::jsonb ->> ? AS value FROM events WHERE events.user_id = ? AND events.created_at >= ? AND jsonb_exists(events.attributes::jsonb, ?)",
 				attrKey, strconv.Itoa(int(user.ID)), cutoff, attrKey,
 			).Scan(&rows).Error
 			if err != nil {
@@ -510,5 +501,59 @@ func AttributeValues(db *gorm.DB) fasthttp.RequestHandler {
 			}
 		}
 		jsonResponse(ctx, map[string]any{"values": values})
+	}
+}
+
+type attributeValueCount struct {
+	Value string `json:"value"`
+	Count int64  `json:"count"`
+}
+
+func AttributeValueCounts(db *gorm.DB) fasthttp.RequestHandler {
+	return func(ctx *fasthttp.RequestCtx) {
+		user, ok := MustUser(ctx)
+		if !ok {
+			return
+		}
+		attrKey := string(ctx.QueryArgs().Peek("key"))
+		if attrKey == "" || !safeAttrKey.MatchString(attrKey) {
+			errResponse(ctx, fasthttp.StatusBadRequest, "invalid or missing key")
+			return
+		}
+
+		project := string(ctx.QueryArgs().Peek("project"))
+		cutoff, _ := parseRange(ctx)
+		userID := strconv.Itoa(int(user.ID))
+
+		type countRow struct {
+			Value string `json:"value"`
+			Count int64  `json:"count"`
+		}
+		var rows []countRow
+		if project != "" {
+			err := db.Raw(
+				"SELECT events.attributes::jsonb ->> ? AS value, COUNT(*) AS count FROM events WHERE events.user_id = ? AND events.project = ? AND events.created_at >= ? AND jsonb_exists(events.attributes::jsonb, ?) GROUP BY 1 ORDER BY count DESC",
+				attrKey, userID, project, cutoff, attrKey,
+			).Scan(&rows).Error
+			if err != nil {
+				errResponse(ctx, fasthttp.StatusInternalServerError, "failed to query attribute value counts")
+				return
+			}
+		} else {
+			err := db.Raw(
+				"SELECT events.attributes::jsonb ->> ? AS value, COUNT(*) AS count FROM events WHERE events.user_id = ? AND events.created_at >= ? AND jsonb_exists(events.attributes::jsonb, ?) GROUP BY 1 ORDER BY count DESC",
+				attrKey, userID, cutoff, attrKey,
+			).Scan(&rows).Error
+			if err != nil {
+				errResponse(ctx, fasthttp.StatusInternalServerError, "failed to query attribute value counts")
+				return
+			}
+		}
+
+		counts := make([]attributeValueCount, 0, len(rows))
+		for _, row := range rows {
+			counts = append(counts, attributeValueCount{Value: row.Value, Count: row.Count})
+		}
+		jsonResponse(ctx, map[string]any{"counts": counts})
 	}
 }

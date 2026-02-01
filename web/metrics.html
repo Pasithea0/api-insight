@@ -318,6 +318,82 @@
       </div>
     </div>
   </div>
+
+  <!-- Attribute breakdown: filter by attribute, show value counts -->
+  <div class="panel" style="margin-top: 1rem">
+    <div
+      class="panel-header"
+      style="
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        flex-wrap: wrap;
+        gap: 0.75rem;
+      "
+    >
+      <div>
+        <div class="panel-title">Attribute breakdown</div>
+        <div class="panel-subtitle">
+          Counts per value for a chosen attribute in the current timeframe.
+        </div>
+      </div>
+      <div style="display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap">
+        <label
+          for="attr-breakdown-key"
+          style="font-size: 0.75rem; color: var(--muted)"
+          >Attribute:</label
+        >
+        <select
+          id="attr-breakdown-key"
+          style="
+            font-size: 0.75rem;
+            padding: 0.25rem 0.5rem;
+            border-radius: 0.4rem;
+            border: 1px solid rgba(148, 163, 184, 0.4);
+            background: rgba(15, 23, 42, 0.96);
+            color: var(--text);
+            min-width: 10rem;
+          "
+        >
+          <option value="">Select attribute</option>
+        </select>
+        <label
+          style="
+            display: flex;
+            align-items: center;
+            gap: 0.35rem;
+            font-size: 0.75rem;
+            color: var(--muted);
+            cursor: pointer;
+          "
+        >
+          <input
+            type="checkbox"
+            id="attr-breakdown-strip-path"
+            style="accent-color: var(--primary)"
+          />
+          Remove path
+        </label>
+      </div>
+    </div>
+    <div style="max-height: 450px; overflow-y: auto">
+      <table class="table" id="attr-breakdown-table">
+        <thead>
+          <tr>
+            <th>Value</th>
+            <th style="text-align: right">Count</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td colspan="2" style="color: var(--muted); font-size: 0.8rem">
+              Select an attribute to see value counts.
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
 </div>
 
 <div class="panel" id="error-rate-panel" style="margin-top: 1rem">
@@ -642,6 +718,8 @@
         loadErrorRateChart();
         loadLatencyChart();
         fetchTopRoutes();
+        fetchAttributeKeys();
+        fetchAttributeValueCounts();
       });
     }
 
@@ -662,6 +740,8 @@
       fetchRealtimeEvents();
       loadErrorRateChart();
       loadLatencyChart();
+      fetchAttributeKeys();
+      fetchAttributeValueCounts();
     }
     if (filterStatusEl) filterStatusEl.addEventListener("change", reloadAll);
 
@@ -909,6 +989,114 @@
       });
     }
     fetchTopRoutes();
+
+    // Attribute breakdown: keys dropdown, value counts table, "Remove path" toggle
+    const attrBreakdownKey = document.getElementById("attr-breakdown-key");
+    const attrBreakdownStripPath = document.getElementById(
+      "attr-breakdown-strip-path",
+    );
+    const attrBreakdownTbody = document.querySelector(
+      "#attr-breakdown-table tbody",
+    );
+    let attrBreakdownCounts = [];
+
+    function displayValue(val, stripPath) {
+      if (!stripPath || !val) return val;
+      try {
+        const u = new URL(val);
+        return u.origin;
+      } catch (_) {
+        return val;
+      }
+    }
+
+    function renderAttrBreakdownTable() {
+      if (!attrBreakdownTbody) return;
+      const stripPath = attrBreakdownStripPath
+        ? attrBreakdownStripPath.checked
+        : false;
+      if (attrBreakdownCounts.length === 0) {
+        attrBreakdownTbody.innerHTML =
+          '<tr><td colspan="2" style="color: var(--muted); font-size: 0.8rem">Select an attribute to see value counts.</td></tr>';
+        return;
+      }
+      let rows = attrBreakdownCounts;
+      if (stripPath) {
+        const byDisplay = {};
+        rows.forEach((r) => {
+          const d = displayValue(r.value, true);
+          byDisplay[d] = (byDisplay[d] || 0) + (r.count || 0);
+        });
+        rows = Object.entries(byDisplay)
+          .map(([value, count]) => ({ value, count }))
+          .sort((a, b) => (b.count || 0) - (a.count || 0));
+      }
+      attrBreakdownTbody.innerHTML = "";
+      rows.forEach((r) => {
+        const tr = document.createElement("tr");
+        const valueTd = document.createElement("td");
+        valueTd.textContent = displayValue(r.value, stripPath);
+        const countTd = document.createElement("td");
+        countTd.style.textAlign = "right";
+        countTd.textContent = "×" + (r.count != null ? r.count.toLocaleString() : "0");
+        tr.appendChild(valueTd);
+        tr.appendChild(countTd);
+        attrBreakdownTbody.appendChild(tr);
+      });
+    }
+
+    function fetchAttributeKeys() {
+      fetch(withFilters("/v1/metrics/attribute-keys?" + rangeParam()))
+        .then((res) => res.json())
+        .then((data) => {
+          const keys = data.keys || [];
+          const select = attrBreakdownKey;
+          if (!select) return;
+          const current = select.value;
+          select.innerHTML = '<option value="">Select attribute</option>';
+          keys.sort().forEach((k) => {
+            const opt = document.createElement("option");
+            opt.value = k;
+            opt.textContent = k;
+            select.appendChild(opt);
+          });
+          if (keys.indexOf(current) !== -1) select.value = current;
+        })
+        .catch((err) => console.error("failed to load attribute keys", err));
+    }
+
+    function fetchAttributeValueCounts() {
+      const key = attrBreakdownKey ? attrBreakdownKey.value : "";
+      if (!key) {
+        attrBreakdownCounts = [];
+        renderAttrBreakdownTable();
+        return;
+      }
+      const url = withFilters(
+        "/v1/metrics/attribute-value-counts?" + rangeParam() + "&key=" + encodeURIComponent(key),
+      );
+      fetch(url)
+        .then((res) => res.json())
+        .then((data) => {
+          attrBreakdownCounts = data.counts || [];
+          renderAttrBreakdownTable();
+        })
+        .catch((err) => {
+          console.error("failed to load attribute value counts", err);
+          attrBreakdownCounts = [];
+          renderAttrBreakdownTable();
+        });
+    }
+
+    if (attrBreakdownKey) {
+      attrBreakdownKey.addEventListener("change", function () {
+        fetchAttributeValueCounts();
+      });
+    }
+    if (attrBreakdownStripPath) {
+      attrBreakdownStripPath.addEventListener("change", renderAttrBreakdownTable);
+    }
+    fetchAttributeKeys();
 
     // Realtime events: load once and optional streaming (polling).
     const realtimeTbody = document.querySelector(

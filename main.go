@@ -92,6 +92,7 @@ func main() {
 	r.GET("/v1/metrics/avg-duration", appmw.AdminAuth(sqlDB, cfg)(handlers.AvgDuration(sqlDB)))
 	r.GET("/v1/metrics/attribute-keys", appmw.AdminAuth(sqlDB, cfg)(handlers.AttributeKeys(sqlDB)))
 	r.GET("/v1/metrics/attribute-values", appmw.AdminAuth(sqlDB, cfg)(handlers.AttributeValues(sqlDB)))
+	r.GET("/v1/metrics/attribute-value-counts", appmw.AdminAuth(sqlDB, cfg)(handlers.AttributeValueCounts(sqlDB)))
 	r.GET("/v1/metrics/top-routes", appmw.AdminAuth(sqlDB, cfg)(handlers.TopRoutes(sqlDB)))
 	r.GET("/v1/metrics/recent", appmw.AdminAuth(sqlDB, cfg)(handlers.RecentEvents(sqlDB)))
 	r.GET("/v1/metrics/event/{id}", appmw.AdminAuth(sqlDB, cfg)(handlers.EventDetail(sqlDB)))
