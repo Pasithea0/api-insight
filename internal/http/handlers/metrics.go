@@ -570,8 +570,8 @@ func AttributeValueCounts(db *gorm.DB) fasthttp.RequestHandler {
 			return
 		}
 		attrKey := string(ctx.QueryArgs().Peek("key"))
-		if attrKey == "" || !safeAttrKey.MatchString(attrKey) {
-			errResponse(ctx, fasthttp.StatusBadRequest, "invalid or missing key")
+		if attrKey == "" {
+			errResponse(ctx, fasthttp.StatusBadRequest, "missing key")
 			return
 		}
 
@@ -584,23 +584,54 @@ func AttributeValueCounts(db *gorm.DB) fasthttp.RequestHandler {
 			Count int64  `json:"count"`
 		}
 		var rows []countRow
-		if project != "" {
-			err := db.Raw(
-				"SELECT events.attributes::jsonb ->> ? AS value, COUNT(*) AS count FROM events WHERE events.user_id = ? AND events.project = ? AND events.created_at >= ? AND jsonb_exists(events.attributes::jsonb, ?) GROUP BY 1 ORDER BY count DESC",
-				attrKey, userID, project, cutoff, attrKey,
-			).Scan(&rows).Error
-			if err != nil {
-				errResponse(ctx, fasthttp.StatusInternalServerError, "failed to query attribute value counts")
+
+		// Handle virtual attributes (top-level columns)
+		var column string
+		switch attrKey {
+		case "remote_ip":
+			column = "remote_ip"
+		case "route":
+			column = "route"
+		case "method":
+			column = "method"
+		}
+
+		if column != "" {
+			q := db.Model(&dbpkg.Event{}).
+				Where("user_id = ? AND created_at >= ?", userID, cutoff).
+				Select(column + " AS value, COUNT(*) AS count").
+				Group(column).
+				Order("count DESC")
+			if project != "" {
+				q = q.Where("project = ?", project)
+			}
+			if err := q.Scan(&rows).Error; err != nil {
+				errResponse(ctx, fasthttp.StatusInternalServerError, "failed to query virtual attribute counts")
 				return
 			}
 		} else {
-			err := db.Raw(
-				"SELECT events.attributes::jsonb ->> ? AS value, COUNT(*) AS count FROM events WHERE events.user_id = ? AND events.created_at >= ? AND jsonb_exists(events.attributes::jsonb, ?) GROUP BY 1 ORDER BY count DESC",
-				attrKey, userID, cutoff, attrKey,
-			).Scan(&rows).Error
-			if err != nil {
-				errResponse(ctx, fasthttp.StatusInternalServerError, "failed to query attribute value counts")
+			if !safeAttrKey.MatchString(attrKey) {
+				errResponse(ctx, fasthttp.StatusBadRequest, "invalid key")
 				return
+			}
+			if project != "" {
+				err := db.Raw(
+					"SELECT events.attributes::jsonb ->> ? AS value, COUNT(*) AS count FROM events WHERE events.user_id = ? AND events.project = ? AND events.created_at >= ? AND jsonb_exists(events.attributes::jsonb, ?) GROUP BY 1 ORDER BY count DESC",
+					attrKey, userID, project, cutoff, attrKey,
+				).Scan(&rows).Error
+				if err != nil {
+					errResponse(ctx, fasthttp.StatusInternalServerError, "failed to query attribute value counts")
+					return
+				}
+			} else {
+				err := db.Raw(
+					"SELECT events.attributes::jsonb ->> ? AS value, COUNT(*) AS count FROM events WHERE events.user_id = ? AND events.created_at >= ? AND jsonb_exists(events.attributes::jsonb, ?) GROUP BY 1 ORDER BY count DESC",
+					attrKey, userID, cutoff, attrKey,
+				).Scan(&rows).Error
+				if err != nil {
+					errResponse(ctx, fasthttp.StatusInternalServerError, "failed to query attribute value counts")
+					return
+				}
 			}
 		}
 
@@ -609,5 +640,72 @@ func AttributeValueCounts(db *gorm.DB) fasthttp.RequestHandler {
 			counts = append(counts, attributeValueCount{Value: row.Value, Count: row.Count})
 		}
 		jsonResponse(ctx, map[string]any{"counts": counts})
+	}
+}
+
+func PatternCounts(db *gorm.DB) fasthttp.RequestHandler {
+	return func(ctx *fasthttp.RequestCtx) {
+		user, ok := MustUser(ctx)
+		if !ok {
+			return
+		}
+		field := string(ctx.QueryArgs().Peek("field")) // "route", "remote_ip", or an attribute key
+		pattern := string(ctx.QueryArgs().Peek("pattern"))
+		matchType := string(ctx.QueryArgs().Peek("type")) // "includes", "ends_with", "starts_with"
+
+		if field == "" || pattern == "" {
+			errResponse(ctx, fasthttp.StatusBadRequest, "missing field or pattern")
+			return
+		}
+
+		project := string(ctx.QueryArgs().Peek("project"))
+		cutoff, _ := parseRange(ctx)
+		userID := strconv.Itoa(int(user.ID))
+
+		var sqlPattern string
+		switch matchType {
+		case "ends_with":
+			sqlPattern = "%" + pattern
+		case "starts_with":
+			sqlPattern = pattern + "%"
+		default: // includes
+			sqlPattern = "%" + pattern + "%"
+		}
+
+		var expr string
+		if field == "route" || field == "remote_ip" || field == "method" {
+			expr = field
+		} else {
+			if !safeAttrKey.MatchString(field) {
+				errResponse(ctx, fasthttp.StatusBadRequest, "invalid field")
+				return
+			}
+			expr = "attributes::jsonb ->> '" + field + "'"
+		}
+
+		type countRow struct {
+			Value string `json:"value"`
+			Count int64  `json:"count"`
+		}
+		var rows []countRow
+
+		q := db.Model(&dbpkg.Event{}).
+			Where("user_id = ? AND created_at >= ?", userID, cutoff).
+			Where(expr+" LIKE ?", sqlPattern).
+			Select(expr + " AS value, COUNT(*) AS count").
+			Group("value").
+			Order("count DESC").
+			Limit(100)
+
+		if project != "" {
+			q = q.Where("project = ?", project)
+		}
+
+		if err := q.Scan(&rows).Error; err != nil {
+			errResponse(ctx, fasthttp.StatusInternalServerError, "failed to query pattern counts")
+			return
+		}
+
+		jsonResponse(ctx, map[string]any{"counts": rows})
 	}
 }

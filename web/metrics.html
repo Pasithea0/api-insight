@@ -394,6 +394,94 @@
       </table>
     </div>
   </div>
+
+  <!-- Pattern Filter: user-defined filter for counts -->
+  <div class="panel" style="margin-top: 1rem">
+    <div
+      class="panel-header"
+      style="
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        flex-wrap: wrap;
+        gap: 0.75rem;
+      "
+    >
+      <div>
+        <div class="panel-title">Pattern breakdown</div>
+        <div class="panel-subtitle">
+          Filter and count values by pattern (e.g. includes "foo").
+        </div>
+      </div>
+      <div style="display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap">
+        <select
+          id="pattern-field"
+          style="
+            font-size: 0.75rem;
+            padding: 0.25rem 0.5rem;
+            border-radius: 0.4rem;
+            border: 1px solid rgba(148, 163, 184, 0.4);
+            background: rgba(15, 23, 42, 0.96);
+            color: var(--text);
+            min-width: 8rem;
+          "
+        >
+          <option value="route">Route</option>
+          <option value="remote_ip">Remote IP</option>
+          <option value="method">Method</option>
+        </select>
+        <select
+          id="pattern-type"
+          style="
+            font-size: 0.75rem;
+            padding: 0.25rem 0.5rem;
+            border-radius: 0.4rem;
+            border: 1px solid rgba(148, 163, 184, 0.4);
+            background: rgba(15, 23, 42, 0.96);
+            color: var(--text);
+          "
+        >
+          <option value="includes">Includes</option>
+          <option value="starts_with">Starts with</option>
+          <option value="ends_with">Ends with</option>
+        </select>
+        <input
+          type="text"
+          id="pattern-input"
+          placeholder="Pattern..."
+          style="
+            font-size: 0.75rem;
+            padding: 0.25rem 0.5rem;
+            border-radius: 0.4rem;
+            border: 1px solid rgba(148, 163, 184, 0.4);
+            background: rgba(15, 23, 42, 0.96);
+            color: var(--text);
+            width: 10rem;
+          "
+        />
+        <button id="pattern-search-btn" class="btn-primary" style="font-size: 0.75rem; padding: 0.25rem 0.75rem">
+          Search
+        </button>
+      </div>
+    </div>
+    <div style="max-height: 450px; overflow-y: auto">
+      <table class="table" id="pattern-breakdown-table">
+        <thead>
+          <tr>
+            <th>Value</th>
+            <th style="text-align: right">Count</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td colspan="2" style="color: var(--muted); font-size: 0.8rem">
+              Enter a pattern to see counts.
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
 </div>
 
 <div class="panel" id="error-rate-panel" style="margin-top: 1rem">
@@ -1060,7 +1148,21 @@
             opt.textContent = k;
             select.appendChild(opt);
           });
-          if (keys.indexOf(current) !== -1) select.value = current;
+
+          // Add static virtual attributes
+          const virtuals = [
+            { value: "remote_ip", label: "Remote IP" },
+            { value: "route", label: "Route" },
+            { value: "method", label: "Method" },
+          ];
+          virtuals.forEach((v) => {
+            const opt = document.createElement("option");
+            opt.value = v.value;
+            opt.textContent = v.label + " (system)";
+            select.appendChild(opt);
+          });
+
+          if (keys.indexOf(current) !== -1 || virtuals.find(v => v.value === current)) select.value = current;
         })
         .catch((err) => console.error("failed to load attribute keys", err));
     }
@@ -1097,6 +1199,73 @@
       attrBreakdownStripPath.addEventListener("change", renderAttrBreakdownTable);
     }
     fetchAttributeKeys();
+
+    // Pattern breakdown logic
+    const patternField = document.getElementById("pattern-field");
+    const patternType = document.getElementById("pattern-type");
+    const patternInput = document.getElementById("pattern-input");
+    const patternSearchBtn = document.getElementById("pattern-search-btn");
+    const patternTbody = document.querySelector("#pattern-breakdown-table tbody");
+
+    function fetchPatternCounts() {
+      const field = patternField ? patternField.value : "route";
+      const type = patternType ? patternType.value : "includes";
+      const pattern = patternInput ? patternInput.value.trim() : "";
+
+      if (!pattern) {
+        if (patternTbody) {
+          patternTbody.innerHTML = '<tr><td colspan="2" style="color: var(--muted); font-size: 0.8rem">Enter a pattern to see counts.</td></tr>';
+        }
+        return;
+      }
+
+      if (patternTbody) {
+        patternTbody.innerHTML = '<tr><td colspan="2" style="color: var(--muted); font-size: 0.8rem">Searching...</td></tr>';
+      }
+
+      const url = withFilters("/v1/metrics/pattern-counts?" + rangeParam() + 
+        "&field=" + encodeURIComponent(field) + 
+        "&type=" + encodeURIComponent(type) + 
+        "&pattern=" + encodeURIComponent(pattern));
+
+      fetch(url)
+        .then(res => res.json())
+        .then(data => {
+          const counts = data.counts || [];
+          if (!patternTbody) return;
+          patternTbody.innerHTML = "";
+          if (counts.length === 0) {
+            patternTbody.innerHTML = '<tr><td colspan="2" style="color: var(--muted); font-size: 0.8rem">No matches found.</td></tr>';
+            return;
+          }
+          counts.forEach(r => {
+            const tr = document.createElement("tr");
+            const valTd = document.createElement("td");
+            valTd.textContent = r.value || "–";
+            const countTd = document.createElement("td");
+            countTd.style.textAlign = "right";
+            countTd.textContent = "×" + (r.count != null ? r.count.toLocaleString() : "0");
+            tr.appendChild(valTd);
+            tr.appendChild(countTd);
+            patternTbody.appendChild(tr);
+          });
+        })
+        .catch(err => {
+          console.error("failed to load pattern counts", err);
+          if (patternTbody) {
+            patternTbody.innerHTML = '<tr><td colspan="2" style="color: var(--muted); font-size: 0.8rem; color: var(--danger)">Error loading data.</td></tr>';
+          }
+        });
+    }
+
+    if (patternSearchBtn) {
+      patternSearchBtn.addEventListener("click", fetchPatternCounts);
+    }
+    if (patternInput) {
+      patternInput.addEventListener("keypress", function(e) {
+        if (e.key === "Enter") fetchPatternCounts();
+      });
+    }
 
     // Realtime events: load once and optional streaming (polling).
     const realtimeTbody = document.querySelector(

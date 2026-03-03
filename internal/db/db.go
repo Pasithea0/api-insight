@@ -23,7 +23,11 @@ func Connect(cfg *config.Config) (*gorm.DB, error) {
 
 	// PrepareStmt: true prevents the GORM postgres migrator from forcing simple protocol
 	// for "SELECT * FROM table LIMIT 1", which would otherwise trigger "insufficient arguments".
-	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{PrepareStmt: true})
+	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{
+		PrepareStmt: true,
+		// Batch multiple inserts into a single query to reduce round-trips and improve performance.
+		CreateBatchSize: 100,
+	})
 	if err != nil {
 		return nil, err
 	}

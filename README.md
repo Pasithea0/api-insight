@@ -87,6 +87,12 @@ go build ./...
 
 ```bash
 go run main.go
+
+# Or
+CGO_ENABLED=0 go run main.go
+
+# To build a local binary:
+CGO_ENABLED=0 go build -o apiinsight .
 ```
 
 ### Code Quality
