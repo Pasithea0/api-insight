@@ -410,7 +410,7 @@
       <div>
         <div class="panel-title">Pattern breakdown</div>
         <div class="panel-subtitle">
-          Filter and count values by pattern (e.g. includes "foo").
+          Filter and count values by pattern, with optional compare-by grouping.
         </div>
       </div>
       <div style="display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap">
@@ -459,6 +459,25 @@
             width: 10rem;
           "
         />
+        <label
+          for="pattern-compare"
+          style="font-size: 0.75rem; color: var(--muted)"
+          >Compare by:</label
+        >
+        <select
+          id="pattern-compare"
+          style="
+            font-size: 0.75rem;
+            padding: 0.25rem 0.5rem;
+            border-radius: 0.4rem;
+            border: 1px solid rgba(148, 163, 184, 0.4);
+            background: rgba(15, 23, 42, 0.96);
+            color: var(--text);
+            min-width: 10rem;
+          "
+        >
+          <option value="">None</option>
+        </select>
         <button id="pattern-search-btn" class="btn-primary" style="font-size: 0.75rem; padding: 0.25rem 0.75rem">
           Search
         </button>
@@ -469,12 +488,14 @@
         <thead>
           <tr>
             <th>Value</th>
+            <th>Compare</th>
+            <th style="text-align: center">Status</th>
             <th style="text-align: right">Count</th>
           </tr>
         </thead>
         <tbody>
           <tr>
-            <td colspan="2" style="color: var(--muted); font-size: 0.8rem">
+            <td colspan="4" style="color: var(--muted); font-size: 0.8rem">
               Enter a pattern to see counts.
             </td>
           </tr>
@@ -1080,6 +1101,7 @@
 
     // Attribute breakdown: keys dropdown, value counts table, "Remove path" toggle
     const attrBreakdownKey = document.getElementById("attr-breakdown-key");
+    const patternCompare = document.getElementById("pattern-compare");
     const attrBreakdownStripPath = document.getElementById(
       "attr-breakdown-strip-path",
     );
@@ -1138,31 +1160,39 @@
         .then((res) => res.json())
         .then((data) => {
           const keys = data.keys || [];
-          const select = attrBreakdownKey;
-          if (!select) return;
-          const current = select.value;
-          select.innerHTML = '<option value="">Select attribute</option>';
-          keys.sort().forEach((k) => {
-            const opt = document.createElement("option");
-            opt.value = k;
-            opt.textContent = k;
-            select.appendChild(opt);
-          });
-
-          // Add static virtual attributes
+          keys.sort();
           const virtuals = [
             { value: "remote_ip", label: "Remote IP" },
             { value: "route", label: "Route" },
             { value: "method", label: "Method" },
           ];
-          virtuals.forEach((v) => {
-            const opt = document.createElement("option");
-            opt.value = v.value;
-            opt.textContent = v.label + " (system)";
-            select.appendChild(opt);
-          });
+          const options = keys.map((k) => ({ value: k, label: k }));
+          virtuals.forEach((v) => options.push({ value: v.value, label: v.label + " (system)" }));
 
-          if (keys.indexOf(current) !== -1 || virtuals.find(v => v.value === current)) select.value = current;
+          const select = attrBreakdownKey;
+          if (select) {
+            const current = select.value;
+            select.innerHTML = '<option value="">Select attribute</option>';
+            options.forEach((o) => {
+              const opt = document.createElement("option");
+              opt.value = o.value;
+              opt.textContent = o.label;
+              select.appendChild(opt);
+            });
+            if (options.find((o) => o.value === current)) select.value = current;
+          }
+
+          if (patternCompare) {
+            const currentCompare = patternCompare.value;
+            patternCompare.innerHTML = '<option value="">None</option>';
+            options.forEach((o) => {
+              const opt = document.createElement("option");
+              opt.value = o.value;
+              opt.textContent = o.label;
+              patternCompare.appendChild(opt);
+            });
+            if (options.find((o) => o.value === currentCompare)) patternCompare.value = currentCompare;
+          }
         })
         .catch((err) => console.error("failed to load attribute keys", err));
     }
@@ -1211,22 +1241,26 @@
       const field = patternField ? patternField.value : "route";
       const type = patternType ? patternType.value : "includes";
       const pattern = patternInput ? patternInput.value.trim() : "";
+      const compareBy = patternCompare ? patternCompare.value : "";
 
       if (!pattern) {
         if (patternTbody) {
-          patternTbody.innerHTML = '<tr><td colspan="2" style="color: var(--muted); font-size: 0.8rem">Enter a pattern to see counts.</td></tr>';
+          patternTbody.innerHTML = '<tr><td colspan="4" style="color: var(--muted); font-size: 0.8rem">Enter a pattern to see counts.</td></tr>';
         }
         return;
       }
 
       if (patternTbody) {
-        patternTbody.innerHTML = '<tr><td colspan="2" style="color: var(--muted); font-size: 0.8rem">Searching...</td></tr>';
+        patternTbody.innerHTML = '<tr><td colspan="4" style="color: var(--muted); font-size: 0.8rem">Searching...</td></tr>';
       }
 
-      const url = withFilters("/v1/metrics/pattern-counts?" + rangeParam() + 
-        "&field=" + encodeURIComponent(field) + 
-        "&type=" + encodeURIComponent(type) + 
+      let url = withFilters("/v1/metrics/pattern-counts?" + rangeParam() +
+        "&field=" + encodeURIComponent(field) +
+        "&type=" + encodeURIComponent(type) +
         "&pattern=" + encodeURIComponent(pattern));
+      if (compareBy) {
+        url += "&compare_by=" + encodeURIComponent(compareBy);
+      }
 
       fetch(url)
         .then(res => res.json())
@@ -1235,17 +1269,37 @@
           if (!patternTbody) return;
           patternTbody.innerHTML = "";
           if (counts.length === 0) {
-            patternTbody.innerHTML = '<tr><td colspan="2" style="color: var(--muted); font-size: 0.8rem">No matches found.</td></tr>';
+            patternTbody.innerHTML = '<tr><td colspan="4" style="color: var(--muted); font-size: 0.8rem">No matches found.</td></tr>';
             return;
           }
           counts.forEach(r => {
             const tr = document.createElement("tr");
             const valTd = document.createElement("td");
             valTd.textContent = r.value || "–";
+            const compareTd = document.createElement("td");
+            compareTd.textContent = r.compare_value || "–";
+            const statusTd = document.createElement("td");
+            statusTd.style.textAlign = "center";
+            if (r.status != null) {
+              const statusClass =
+                r.status >= 500
+                  ? "badge-danger"
+                  : r.status >= 400
+                    ? "badge-warning"
+                    : "badge-primary";
+              const badge = document.createElement("span");
+              badge.className = "badge " + statusClass;
+              badge.textContent = String(r.status);
+              statusTd.appendChild(badge);
+            } else {
+              statusTd.textContent = "–";
+            }
             const countTd = document.createElement("td");
             countTd.style.textAlign = "right";
             countTd.textContent = "×" + (r.count != null ? r.count.toLocaleString() : "0");
             tr.appendChild(valTd);
+            tr.appendChild(compareTd);
+            tr.appendChild(statusTd);
             tr.appendChild(countTd);
             patternTbody.appendChild(tr);
           });
@@ -1253,7 +1307,7 @@
         .catch(err => {
           console.error("failed to load pattern counts", err);
           if (patternTbody) {
-            patternTbody.innerHTML = '<tr><td colspan="2" style="color: var(--muted); font-size: 0.8rem; color: var(--danger)">Error loading data.</td></tr>';
+            patternTbody.innerHTML = '<tr><td colspan="4" style="color: var(--muted); font-size: 0.8rem; color: var(--danger)">Error loading data.</td></tr>';
           }
         });
     }

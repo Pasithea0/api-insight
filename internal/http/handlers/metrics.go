@@ -290,8 +290,8 @@ func TopRoutes(db *gorm.DB) fasthttp.RequestHandler {
 
 type recentEvent struct {
 	ID         uint   `json:"id"`
-	Time       string `json:"time"`        // legacy, pre-formatted server time
-	CreatedAt  string `json:"created_at"`  // ISO 8601 UTC for client-side local formatting
+	Time       string `json:"time"`       // legacy, pre-formatted server time
+	CreatedAt  string `json:"created_at"` // ISO 8601 UTC for client-side local formatting
 	Method     string `json:"method"`
 	Route      string `json:"route"`
 	Status     int    `json:"status"`
@@ -563,6 +563,18 @@ type attributeValueCount struct {
 	Count int64  `json:"count"`
 }
 
+func metricFieldExpr(field string) (string, bool) {
+	switch field {
+	case "route", "remote_ip", "method":
+		return field, true
+	default:
+		if !safeAttrKey.MatchString(field) {
+			return "", false
+		}
+		return "attributes::jsonb ->> '" + field + "'", true
+	}
+}
+
 func AttributeValueCounts(db *gorm.DB) fasthttp.RequestHandler {
 	return func(ctx *fasthttp.RequestCtx) {
 		user, ok := MustUser(ctx)
@@ -650,6 +662,7 @@ func PatternCounts(db *gorm.DB) fasthttp.RequestHandler {
 			return
 		}
 		field := string(ctx.QueryArgs().Peek("field")) // "route", "remote_ip", or an attribute key
+		compareBy := string(ctx.QueryArgs().Peek("compare_by"))
 		pattern := string(ctx.QueryArgs().Peek("pattern"))
 		matchType := string(ctx.QueryArgs().Peek("type")) // "includes", "ends_with", "starts_with"
 
@@ -672,38 +685,78 @@ func PatternCounts(db *gorm.DB) fasthttp.RequestHandler {
 			sqlPattern = "%" + pattern + "%"
 		}
 
-		var expr string
-		if field == "route" || field == "remote_ip" || field == "method" {
-			expr = field
-		} else {
-			if !safeAttrKey.MatchString(field) {
-				errResponse(ctx, fasthttp.StatusBadRequest, "invalid field")
-				return
-			}
-			expr = "attributes::jsonb ->> '" + field + "'"
+		expr, ok := metricFieldExpr(field)
+		if !ok {
+			errResponse(ctx, fasthttp.StatusBadRequest, "invalid field")
+			return
 		}
 
 		type countRow struct {
-			Value string `json:"value"`
-			Count int64  `json:"count"`
+			Value        string `json:"value"`
+			CompareValue string `json:"compare_value,omitempty"`
+			Status       *int   `json:"status,omitempty"`
+			Count        int64  `json:"count"`
 		}
 		var rows []countRow
 
-		q := db.Model(&dbpkg.Event{}).
-			Where("user_id = ? AND created_at >= ?", userID, cutoff).
-			Where(expr+" LIKE ?", sqlPattern).
-			Select(expr + " AS value, COUNT(*) AS count").
-			Group("value").
-			Order("count DESC").
-			Limit(100)
+		if compareBy != "" {
+			compareExpr, ok := metricFieldExpr(compareBy)
+			if !ok {
+				errResponse(ctx, fasthttp.StatusBadRequest, "invalid compare_by")
+				return
+			}
 
-		if project != "" {
-			q = q.Where("project = ?", project)
-		}
+			type compareRow struct {
+				Value        string `json:"value"`
+				CompareValue string `json:"compare_value"`
+				Status       int    `json:"status"`
+				Count        int64  `json:"count"`
+			}
+			var compareRows []compareRow
+			q := db.Model(&dbpkg.Event{}).
+				Where("user_id = ? AND created_at >= ?", userID, cutoff).
+				Where(expr+" LIKE ?", sqlPattern).
+				Select(expr + " AS value, " + compareExpr + " AS compare_value, status AS status, COUNT(*) AS count").
+				Group("value, compare_value, status").
+				Order("count DESC").
+				Limit(300)
 
-		if err := q.Scan(&rows).Error; err != nil {
-			errResponse(ctx, fasthttp.StatusInternalServerError, "failed to query pattern counts")
-			return
+			if project != "" {
+				q = q.Where("project = ?", project)
+			}
+
+			if err := q.Scan(&compareRows).Error; err != nil {
+				errResponse(ctx, fasthttp.StatusInternalServerError, "failed to query pattern counts")
+				return
+			}
+
+			rows = make([]countRow, 0, len(compareRows))
+			for _, r := range compareRows {
+				status := r.Status
+				rows = append(rows, countRow{
+					Value:        r.Value,
+					CompareValue: r.CompareValue,
+					Status:       &status,
+					Count:        r.Count,
+				})
+			}
+		} else {
+			q := db.Model(&dbpkg.Event{}).
+				Where("user_id = ? AND created_at >= ?", userID, cutoff).
+				Where(expr+" LIKE ?", sqlPattern).
+				Select(expr + " AS value, COUNT(*) AS count").
+				Group("value").
+				Order("count DESC").
+				Limit(100)
+
+			if project != "" {
+				q = q.Where("project = ?", project)
+			}
+
+			if err := q.Scan(&rows).Error; err != nil {
+				errResponse(ctx, fasthttp.StatusInternalServerError, "failed to query pattern counts")
+				return
+			}
 		}
 
 		jsonResponse(ctx, map[string]any{"counts": rows})
