@@ -100,7 +100,60 @@ func TrafficSeries(db *gorm.DB) fasthttp.RequestHandler {
 		attrKey := string(ctx.QueryArgs().Peek("attr_key"))
 		attrValue := string(ctx.QueryArgs().Peek("attr_value"))
 
-		// Use Raw so GROUP BY is never parameterized. Bucket by 30 min for short ranges, else 1 hour.
+		// If we can use pre-aggregated buckets (no attribute filters and hourly buckets)
+		if attrKey == "" && !bucket30Min {
+			// Get historical data from buckets
+			var buckets []trafficPoint
+			q := db.Model(&dbpkg.MetricBucket{}).
+				Where("user_id = ? AND bucket_start >= ?", strconv.Itoa(int(user.ID)), cutoff.UTC().Truncate(time.Hour))
+			if project != "" {
+				q = q.Where("project = ?", project)
+			}
+
+			var selectExpr string
+			if status == "success" {
+				selectExpr = "to_char(bucket_start, 'YYYY-MM-DD\"T\"HH24:MI:SS') || 'Z' as bucket, sum(total_count - error_count) as count"
+			} else if status == "error" {
+				selectExpr = "to_char(bucket_start, 'YYYY-MM-DD\"T\"HH24:MI:SS') || 'Z' as bucket, sum(error_count) as count"
+			} else {
+				selectExpr = "to_char(bucket_start, 'YYYY-MM-DD\"T\"HH24:MI:SS') || 'Z' as bucket, sum(total_count) as count"
+			}
+
+			if err := q.Select(selectExpr).Group("bucket_start").Order("bucket_start").Scan(&buckets).Error; err != nil {
+				errResponse(ctx, fasthttp.StatusInternalServerError, "failed to query bucket metrics")
+				return
+			}
+
+			// Also get data for the current partial hour from events table
+			lastBucketTime := cutoff.UTC().Truncate(time.Hour)
+			if len(buckets) > 0 {
+				if t, err := time.Parse("2006-01-02T15:04:05Z", buckets[len(buckets)-1].Bucket); err == nil {
+					lastBucketTime = t.Add(time.Hour)
+				}
+			}
+
+			var currentHour trafficPoint
+			cq := db.Model(&dbpkg.Event{}).
+				Where("user_id = ? AND created_at >= ?", strconv.Itoa(int(user.ID)), lastBucketTime)
+			if project != "" {
+				cq = cq.Where("project = ?", project)
+			}
+			if status == "success" {
+				cq = cq.Where("status < 400")
+			} else if status == "error" {
+				cq = cq.Where("status >= 400")
+			}
+
+			if err := cq.Select("to_char(date_trunc('hour', created_at), 'YYYY-MM-DD\"T\"HH24:MI:SS') || 'Z' as bucket, count(*) as count").
+				Group("date_trunc('hour', created_at)").Scan(&currentHour).Error; err == nil && currentHour.Bucket != "" {
+				buckets = append(buckets, currentHour)
+			}
+
+			jsonResponse(ctx, map[string]any{"series": buckets})
+			return
+		}
+
+		// Fallback to raw query for complex filters or 30-min buckets
 		var bucketExpr string
 		if bucket30Min {
 			bucketExpr = `to_char(to_timestamp(floor(extract(epoch from created_at) / 1800) * 1800), 'YYYY-MM-DD"T"HH24:MI:SS') || 'Z'`
@@ -436,8 +489,9 @@ func AttributeKeys(db *gorm.DB) fasthttp.RequestHandler {
 			Key string `json:"key"`
 		}
 		var rows []keyRow
+		// Use jsonb_object_keys which is much faster than jsonb_each for flat maps
 		err := db.Raw(
-			"SELECT DISTINCT je.key AS key FROM events, jsonb_each(events.attributes::jsonb) je WHERE events.user_id = ? AND events.created_at >= ?",
+			"SELECT DISTINCT jsonb_object_keys(attributes) AS key FROM events WHERE user_id = ? AND created_at >= ?",
 			strconv.Itoa(int(user.ID)), cutoff,
 		).Scan(&rows).Error
 		if err != nil {

@@ -12,7 +12,7 @@ import (
 type Event struct {
 	ID uint `gorm:"primaryKey"`
 
-	CreatedAt time.Time
+	CreatedAt time.Time `gorm:"index:idx_events_user_created_at,priority:3;index:idx_events_user_project_created_at,priority:4"`
 
 	// ExpiresAt is the timestamp after which this event is eligible
 	// for deletion by the retention worker. A nil value means the
@@ -20,12 +20,12 @@ type Event struct {
 	ExpiresAt *time.Time `gorm:"index"`
 
 	// Owner of this event (will later map to a user/tenant).
-	UserID string `gorm:"index"`
+	UserID string `gorm:"index;index:idx_events_user_created_at,priority:1;index:idx_events_user_project_created_at,priority:1;index:idx_events_user_status_created_at,priority:1"`
 
-	Project string `gorm:"index"`
+	Project string `gorm:"index;index:idx_events_user_project_created_at,priority:2"`
 	Route   string `gorm:"index"`
 	Method  string `gorm:"index"`
-	Status  int
+	Status  int    `gorm:"index;index:idx_events_user_status_created_at,priority:2"`
 
 	DurationMs int64
 	RemoteIP   string
@@ -33,7 +33,7 @@ type Event struct {
 	// Attributes holds arbitrary key/value pairs for this event, so
 	// callers can attach custom metrics (e.g. price, plan, region)
 	// without schema changes. This will back flexible charts later.
-	Attributes datatypes.JSONMap `gorm:"type:json"`
+	Attributes datatypes.JSONMap `gorm:"type:jsonb;index:,type:gin"`
 }
 
 // MetricBucket stores pre-aggregated hourly metrics per (user, project)
