@@ -1999,7 +1999,9 @@
             const timeStr = e.created_at ? formatRealtimeTime(e.created_at) : (e.time || "");
 
             let attrValue = '';
-            if (field === 'route' || field === 'method' || field === 'remote_ip') {
+            if (field === 'route') { // If searching by route, don't show it in the attribute column
+                attrValue = '';
+            } else if (field === 'method' || field === 'remote_ip') {
                 attrValue = e[field] || '';
             } else if (e.attributes) {
                 attrValue = e.attributes[field] || '';
