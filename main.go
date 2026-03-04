@@ -98,6 +98,7 @@ func main() {
 	r.GET("/v1/metrics/recent", appmw.AdminAuth(sqlDB, cfg)(handlers.RecentEvents(sqlDB)))
 	r.GET("/v1/metrics/all-events", appmw.AdminAuth(sqlDB, cfg)(handlers.AllEvents(sqlDB)))
 	r.GET("/v1/metrics/search-events", appmw.AdminAuth(sqlDB, cfg)(handlers.SearchEvents(sqlDB)))
+	r.GET("/v1/metrics/export", appmw.AdminAuth(sqlDB, cfg)(handlers.Export(sqlDB)))
 	r.GET("/v1/metrics/event/{id}", appmw.AdminAuth(sqlDB, cfg)(handlers.EventDetail(sqlDB)))
 
 	log.Printf("apiinsight listening on %s", cfg.ListenAddr)

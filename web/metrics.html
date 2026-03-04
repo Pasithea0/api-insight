@@ -86,8 +86,9 @@
           "
           title="Stream events (auto-refresh)"
         >
-          <i data-lucide="refresh-cw" id="stream-icon"></i>
+          <span data-lucide="refresh-cw" id="stream-icon"></span>
         </button>
+        <button type="button" id="realtime-download" class="btn-ghost" title="Download as CSV"><span data-lucide="download" width="10" height="10"></span></button>
       </div>
     </div>
     <div style="max-height: 280px; overflow-y: auto">
@@ -264,6 +265,7 @@
           <option value="50">50</option>
           <option value="100">100</option>
         </select>
+        <button type="button" id="top-routes-download" class="btn-ghost" title="Download as CSV"><span data-lucide="download" width="10" height="10"></span></button>
       </div>
     </div>
     <div style="max-height: 450px; overflow-y: auto">
@@ -396,6 +398,7 @@
           />
           Remove path
         </label>
+        <button type="button" id="attr-breakdown-download" class="btn-ghost" title="Download as CSV"><span data-lucide="download" width="14" height="14"></span></button>
       </div>
     </div>
     <div style="max-height: 450px; overflow-y: auto">
@@ -611,6 +614,7 @@
         </select>
         <input type="text" id="search-input" placeholder="Pattern..." style="font-size: 0.75rem; padding: 0.25rem 0.5rem; border-radius: 0.4rem; border: 1px solid rgba(148, 163, 184, 0.4); background: rgba(15, 23, 42, 0.96); color: var(--text); width: 10rem;" />
         <button id="search-btn" class="btn-primary" style="font-size: 0.75rem; padding: 0.25rem 0.75rem;">Search</button>
+        <button type="button" id="search-events-download" class="btn-ghost" title="Download as CSV"><span data-lucide="download" width="10" height="10"></span></button>
     </div>
     <div style="max-height: 450px; overflow-y: auto">
         <table class="table" id="search-results-table">
@@ -655,6 +659,7 @@
         <option value="100">100</option>
         <option value="200">200</option>
       </select>
+        <button type="button" id="all-events-download" class="btn-ghost" title="Download as CSV"><span data-lucide="download" width="10" height="10"></span></button>
     </div>
   </div>
   <div style="max-height: 450px; overflow-y: auto">
@@ -727,6 +732,10 @@
   </div>
 </div>
 
+<script src="https://unpkg.com/lucide@latest"></script>
+<script>
+  lucide.createIcons();
+</script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <script>
   (function () {
@@ -2009,6 +2018,63 @@
         openEventDetail(id);
       });
     }
+
+    // CSV Export
+    const realtimeDownload = document.getElementById("realtime-download");
+    const topRoutesDownload = document.getElementById("top-routes-download");
+    const attrBreakdownDownload = document.getElementById("attr-breakdown-download");
+    const allEventsDownload = document.getElementById("all-events-download");
+    const searchEventsDownload = document.getElementById("search-events-download");
+
+    function downloadCSV(source, params) {
+      let url = withFilters("/v1/metrics/export?source=" + source + "&" + rangeParam());
+      for (const [key, value] of Object.entries(params)) {
+        url += "&" + encodeURIComponent(key) + "=" + encodeURIComponent(value);
+      }
+      window.location.href = url;
+    }
+
+    if (realtimeDownload) {
+      realtimeDownload.addEventListener("click", function () {
+        const limit = realtimeLimit ? parseInt(realtimeLimit.value) : 10;
+        downloadCSV("recent", { limit: limit, offset: realtimeOffset });
+      });
+    }
+
+    if (topRoutesDownload) {
+      topRoutesDownload.addEventListener("click", function () {
+        const limit = topRoutesLimit ? parseInt(topRoutesLimit.value) : 10;
+        downloadCSV("top-routes", { limit: limit, offset: topRoutesOffset });
+      });
+    }
+
+    if (attrBreakdownDownload) {
+      attrBreakdownDownload.addEventListener("click", function () {
+        const key = attrBreakdownKey ? attrBreakdownKey.value : "";
+        if (!key) return;
+        const limit = attrBreakdownLimit ? parseInt(attrBreakdownLimit.value) : 50;
+        downloadCSV("attribute-value-counts", { key: key, limit: limit, offset: attrBreakdownOffset });
+      });
+    }
+
+    if (allEventsDownload) {
+      allEventsDownload.addEventListener("click", function () {
+        const limit = allEventsLimit ? parseInt(allEventsLimit.value) : 50;
+        downloadCSV("all-events", { limit: limit, offset: allEventsOffset });
+      });
+    }
+
+    if (searchEventsDownload) {
+      searchEventsDownload.addEventListener("click", function () {
+        const field = searchField ? searchField.value : 'route';
+        const type = searchType ? searchType.value : 'includes';
+        const pattern = searchInput ? searchInput.value.trim() : '';
+        if (!pattern) return;
+        const limit = 50;
+        downloadCSV("search-events", { field: field, type: type, pattern: pattern, limit: limit, offset: searchOffset });
+      });
+    }
+    lucide.createIcons();
   })();
 </script>
 {{end}}
