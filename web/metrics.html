@@ -5,56 +5,6 @@
   services.
 </div>
 
-<!-- Event Search -->
-<div class="panel" style="margin-top: 1rem">
-    <div class="panel-header">
-        <div>
-            <div class="panel-title">Search Events</div>
-            <div class="panel-subtitle">Search for individual requests by pattern.</div>
-        </div>
-    </div>
-    <div style="padding: 0.75rem; border-bottom: 1px solid var(--border-soft); display: flex; gap: 0.75rem; flex-wrap: wrap;">
-        <select id="search-field" style="font-size: 0.75rem; padding: 0.25rem 0.5rem; border-radius: 0.4rem; border: 1px solid rgba(148, 163, 184, 0.4); background: rgba(15, 23, 42, 0.96); color: var(--text); min-width: 8rem;">
-            <option value="route">Route</option>
-            <option value="remote_ip">Remote IP</option>
-            <option value="method">Method</option>
-        </select>
-        <select id="search-type" style="font-size: 0.75rem; padding: 0.25rem 0.5rem; border-radius: 0.4rem; border: 1px solid rgba(148, 163, 184, 0.4); background: rgba(15, 23, 42, 0.96); color: var(--text);">
-            <option value="includes">Includes</option>
-            <option value="starts_with">Starts with</option>
-            <option value="ends_with">Ends with</option>
-        </select>
-        <input type="text" id="search-input" placeholder="Pattern..." style="font-size: 0.75rem; padding: 0.25rem 0.5rem; border-radius: 0.4rem; border: 1px solid rgba(148, 163, 184, 0.4); background: rgba(15, 23, 42, 0.96); color: var(--text); width: 10rem;" />
-        <button id="search-btn" class="btn-primary" style="font-size: 0.75rem; padding: 0.25rem 0.75rem;">Search</button>
-    </div>
-    <div style="max-height: 450px; overflow-y: auto">
-        <table class="table" id="search-results-table">
-            <thead>
-                <tr>
-                    <th>Time</th>
-                    <th>Method</th>
-                    <th>Route</th>
-                    <th style="text-align: center">Status</th>
-                    <th style="text-align: right">Duration</th>
-                    <th>Project</th>
-                </tr>
-            </thead>
-            <tbody>
-                <tr>
-                    <td colspan="6" style="color: var(--muted); font-size: 0.8rem">Enter a search query to see results.</td>
-                </tr>
-            </tbody>
-        </table>
-    </div>
-    <div style="padding: 0.75rem; padding-bottom: 0; border-top: 1px solid var(--border-soft); display: flex; justify-content: space-between; align-items: center;">
-        <div style="font-size: 0.75rem; color: var(--muted)" id="search-results-info">Page 1</div>
-        <div style="display: flex; gap: 0.5rem">
-            <button type="button" id="search-results-prev" class="btn-ghost" style="font-size: 0.75rem; padding: 0.2rem 0.5rem" disabled>‹ Prev</button>
-            <button type="button" id="search-results-next" class="btn-ghost" style="font-size: 0.75rem; padding: 0.2rem 0.5rem">Next ›</button>
-        </div>
-    </div>
-</div>
-
 <!-- Realtime metrics: summary cards + realtime table -->
 <div class="metrics-realtime-row">
   <div class="metrics-cards-grid">
@@ -193,51 +143,6 @@
           Next ›
         </button>
       </div>
-    </div>
-  </div>
-</div>
-
-<div class="panel" style="margin-top: 1rem">
-  <div class="panel-header">
-    <div>
-      <div class="panel-title">All Requests</div>
-      <div class="panel-subtitle">All requests in the selected period.</div>
-    </div>
-    <div style="display: flex; align-items: center; gap: 0.5rem">
-      <label for="all-events-limit" style="font-size: 0.75rem; color: var(--muted)">Show:</label>
-      <select id="all-events-limit" style="font-size: 0.75rem; padding: 0.2rem 0.5rem; border-radius: 0.4rem; border: 1px solid rgba(148, 163, 184, 0.4); background: rgba(15, 23, 42, 0.96); color: var(--text);">
-        <option value="10">10</option>
-        <option value="20">20</option>
-        <option value="50" selected>50</option>
-        <option value="100">100</option>
-        <option value="200">200</option>
-      </select>
-    </div>
-  </div>
-  <div style="max-height: 450px; overflow-y: auto">
-    <table class="table" id="all-events-table">
-      <thead>
-        <tr>
-          <th>Time</th>
-          <th>Method</th>
-          <th>Route</th>
-          <th style="text-align: center">Status</th>
-          <th style="text-align: right">Duration</th>
-          <th>Project</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr>
-          <td colspan="6" style="color: var(--muted); font-size: 0.8rem">Loading requests...</td>
-        </tr>
-      </tbody>
-    </table>
-  </div>
-  <div style="padding: 0.75rem; padding-bottom: 0; border-top: 1px solid var(--border-soft); display: flex; justify-content: space-between; align-items: center;">
-    <div style="font-size: 0.75rem; color: var(--muted)" id="all-events-info">Page 1</div>
-    <div style="display: flex; gap: 0.5rem">
-      <button type="button" id="all-events-prev" class="btn-ghost" style="font-size: 0.75rem; padding: 0.2rem 0.5rem" disabled>‹ Prev</button>
-      <button type="button" id="all-events-next" class="btn-ghost" style="font-size: 0.75rem; padding: 0.2rem 0.5rem">Next ›</button>
     </div>
   </div>
 </div>
@@ -683,6 +588,101 @@
     </div>
   </div>
   <canvas id="latency-chart" height="80"></canvas>
+</div>
+
+<!-- Event Search -->
+<div class="panel" style="margin-top: 1rem">
+    <div class="panel-header">
+        <div>
+            <div class="panel-title">Search Events</div>
+            <div class="panel-subtitle">Search for individual requests by pattern.</div>
+        </div>
+    </div>
+    <div style="padding: 0.75rem; border-bottom: 1px solid var(--border-soft); display: flex; gap: 0.75rem; flex-wrap: wrap;">
+        <select id="search-field" style="font-size: 0.75rem; padding: 0.25rem 0.5rem; border-radius: 0.4rem; border: 1px solid rgba(148, 163, 184, 0.4); background: rgba(15, 23, 42, 0.96); color: var(--text); min-width: 8rem;">
+            <option value="route">Route</option>
+            <option value="remote_ip">Remote IP</option>
+            <option value="method">Method</option>
+        </select>
+        <select id="search-type" style="font-size: 0.75rem; padding: 0.25rem 0.5rem; border-radius: 0.4rem; border: 1px solid rgba(148, 163, 184, 0.4); background: rgba(15, 23, 42, 0.96); color: var(--text);">
+            <option value="includes">Includes</option>
+            <option value="starts_with">Starts with</option>
+            <option value="ends_with">Ends with</option>
+        </select>
+        <input type="text" id="search-input" placeholder="Pattern..." style="font-size: 0.75rem; padding: 0.25rem 0.5rem; border-radius: 0.4rem; border: 1px solid rgba(148, 163, 184, 0.4); background: rgba(15, 23, 42, 0.96); color: var(--text); width: 10rem;" />
+        <button id="search-btn" class="btn-primary" style="font-size: 0.75rem; padding: 0.25rem 0.75rem;">Search</button>
+    </div>
+    <div style="max-height: 450px; overflow-y: auto">
+        <table class="table" id="search-results-table">
+            <thead>
+                <tr>
+                    <th>Time</th>
+                    <th>Method</th>
+                    <th>Route</th>
+                    <th style="text-align: center">Status</th>
+                    <th style="text-align: right">Duration</th>
+                    <th>Project</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td colspan="6" style="color: var(--muted); font-size: 0.8rem">Enter a search query to see results.</td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+    <div style="padding: 0.75rem; padding-bottom: 0; border-top: 1px solid var(--border-soft); display: flex; justify-content: space-between; align-items: center;">
+        <div style="font-size: 0.75rem; color: var(--muted)" id="search-results-info">Page 1</div>
+        <div style="display: flex; gap: 0.5rem">
+            <button type="button" id="search-results-prev" class="btn-ghost" style="font-size: 0.75rem; padding: 0.2rem 0.5rem" disabled>‹ Prev</button>
+            <button type="button" id="search-results-next" class="btn-ghost" style="font-size: 0.75rem; padding: 0.2rem 0.5rem">Next ›</button>
+        </div>
+    </div>
+</div>
+
+<div class="panel" style="margin-top: 1rem">
+  <div class="panel-header">
+    <div>
+      <div class="panel-title">All Requests</div>
+      <div class="panel-subtitle">All requests in the selected period.</div>
+    </div>
+    <div style="display: flex; align-items: center; gap: 0.5rem">
+      <label for="all-events-limit" style="font-size: 0.75rem; color: var(--muted)">Show:</label>
+      <select id="all-events-limit" style="font-size: 0.75rem; padding: 0.2rem 0.5rem; border-radius: 0.4rem; border: 1px solid rgba(148, 163, 184, 0.4); background: rgba(15, 23, 42, 0.96); color: var(--text);">
+        <option value="10">10</option>
+        <option value="20">20</option>
+        <option value="50" selected>50</option>
+        <option value="100">100</option>
+        <option value="200">200</option>
+      </select>
+    </div>
+  </div>
+  <div style="max-height: 450px; overflow-y: auto">
+    <table class="table" id="all-events-table">
+      <thead>
+        <tr>
+          <th>Time</th>
+          <th>Method</th>
+          <th>Route</th>
+          <th style="text-align: center">Status</th>
+          <th style="text-align: right">Duration</th>
+          <th>Project</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td colspan="6" style="color: var(--muted); font-size: 0.8rem">Loading requests...</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+  <div style="padding: 0.75rem; padding-bottom: 0; border-top: 1px solid var(--border-soft); display: flex; justify-content: space-between; align-items: center;">
+    <div style="font-size: 0.75rem; color: var(--muted)" id="all-events-info">Page 1</div>
+    <div style="display: flex; gap: 0.5rem">
+      <button type="button" id="all-events-prev" class="btn-ghost" style="font-size: 0.75rem; padding: 0.2rem 0.5rem" disabled>‹ Prev</button>
+      <button type="button" id="all-events-next" class="btn-ghost" style="font-size: 0.75rem; padding: 0.2rem 0.5rem">Next ›</button>
+    </div>
+  </div>
 </div>
 
 <div
