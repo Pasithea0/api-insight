@@ -603,9 +603,6 @@
     </div>
     <div style="padding: 0.75rem; border-bottom: 1px solid var(--border-soft); display: flex; gap: 0.75rem; flex-wrap: wrap;">
         <select id="search-field" style="font-size: 0.75rem; padding: 0.25rem 0.5rem; border-radius: 0.4rem; border: 1px solid rgba(148, 163, 184, 0.4); background: rgba(15, 23, 42, 0.96); color: var(--text); min-width: 8rem;">
-            <option value="route">Route</option>
-            <option value="remote_ip">Remote IP</option>
-            <option value="method">Method</option>
         </select>
         <select id="search-type" style="font-size: 0.75rem; padding: 0.25rem 0.5rem; border-radius: 0.4rem; border: 1px solid rgba(148, 163, 184, 0.4); background: rgba(15, 23, 42, 0.96); color: var(--text);">
             <option value="includes">Includes</option>
@@ -620,9 +617,10 @@
         <table class="table" id="search-results-table">
             <thead>
                 <tr>
+                    <th>Route</th>
+                    <th>Attribute</th>
                     <th>Time</th>
                     <th>Method</th>
-                    <th>Route</th>
                     <th style="text-align: center">Status</th>
                     <th style="text-align: right">Duration</th>
                     <th>Project</th>
@@ -630,7 +628,7 @@
             </thead>
             <tbody>
                 <tr>
-                    <td colspan="6" style="color: var(--muted); font-size: 0.8rem">Enter a search query to see results.</td>
+                    <td colspan="7" style="color: var(--muted); font-size: 0.8rem">Enter a search query to see results.</td>
                 </tr>
             </tbody>
         </table>
@@ -1375,6 +1373,25 @@
             });
             if (options.find((o) => o.value === currentCompare)) patternCompare.value = currentCompare;
           }
+
+          const searchFieldEl = document.getElementById("search-field");
+          if (searchFieldEl) {
+            const current = searchFieldEl.value;
+            searchFieldEl.innerHTML = "";
+            const searchOptions = keys.map((k) => ({ value: k, label: k })).concat(virtuals);
+            searchOptions.sort((a,b) => a.label.localeCompare(b.label));
+            searchOptions.forEach((o) => {
+              const opt = document.createElement("option");
+              opt.value = o.value;
+              opt.textContent = o.label;
+              searchFieldEl.appendChild(opt);
+            });
+            if (searchOptions.find((o) => o.value === current)) {
+                searchFieldEl.value = current;
+            } else if (searchOptions.length > 0) {
+                searchFieldEl.value = 'route';
+            }
+          }
         })
         .catch((err) => console.error("failed to load attribute keys", err));
     }
@@ -1917,13 +1934,13 @@
 
         if (!pattern) {
             if (searchResultsTbody) {
-                searchResultsTbody.innerHTML = '<tr><td colspan="6" style="color: var(--muted); font-size: 0.8rem">Enter a search query to see results.</td></tr>';
+                searchResultsTbody.innerHTML = '<tr><td colspan="7" style="color: var(--muted); font-size: 0.8rem">Enter a search query to see results.</td></tr>';
             }
             return;
         }
 
         if (searchResultsTbody) {
-            searchResultsTbody.innerHTML = '<tr><td colspan="6" style="color: var(--muted); font-size: 0.8rem">Searching...</td></tr>';
+            searchResultsTbody.innerHTML = '<tr><td colspan="7" style="color: var(--muted); font-size: 0.8rem">Searching...</td></tr>';
         }
 
         const limit = 50;
@@ -1953,7 +1970,7 @@
             .catch(err => {
                 console.error("failed to load search results", err);
                 if (searchResultsTbody) {
-                    searchResultsTbody.innerHTML = '<tr><td colspan="6" style="color: var(--muted); font-size: 0.8rem; color: var(--danger)">Error loading data.</td></tr>';
+                    searchResultsTbody.innerHTML = '<tr><td colspan="7" style="color: var(--muted); font-size: 0.8rem; color: var(--danger)">Error loading data.</td></tr>';
                 }
             });
     }
@@ -1961,9 +1978,17 @@
     function renderSearchResults(events) {
         if (!searchResultsTbody) return;
         searchResultsTbody.innerHTML = "";
+
+        const field = searchField ? searchField.value : 'route';
+        const header = document.querySelector("#search-results-table th:nth-child(2)");
+        if(header) {
+            const option = searchField.querySelector('option[value="' + field + '"]');
+            header.textContent = option ? option.textContent : "Attribute";
+        }
+
         if (!events || events.length === 0) {
             const tr = document.createElement("tr");
-            tr.innerHTML = '<td colspan="6" style="color: var(--muted); font-size: 0.8rem;">No events found.</td>';
+            tr.innerHTML = '<td colspan="7" style="color: var(--muted); font-size: 0.8rem;">No events found.</td>';
             searchResultsTbody.appendChild(tr);
             return;
         }
@@ -1972,7 +1997,21 @@
             tr.setAttribute("data-event-id", e.id);
             const statusClass = e.status >= 500 ? "badge-danger" : e.status >= 400 ? "badge-warning" : "badge-primary";
             const timeStr = e.created_at ? formatRealtimeTime(e.created_at) : (e.time || "");
-            tr.innerHTML = "<td>" + timeStr + "</td>" + "<td><code>" + (e.method || "") + "</code></td>" + "<td>" + (e.route || "/") + "</td>" + '<td style="text-align:center;"><span class="badge ' + statusClass + '">' + e.status + "</span></td>" + '<td style="text-align:right;">' + (e.duration_ms != null ? e.duration_ms + " ms" : "–") + "</td>" + "<td>" + (e.project || "–") + "</td>";
+
+            let attrValue = '';
+            if (field === 'route' || field === 'method' || field === 'remote_ip') {
+                attrValue = e[field] || '';
+            } else if (e.attributes) {
+                attrValue = e.attributes[field] || '';
+            }
+
+            tr.innerHTML = "<td>" + (e.route || "/") + "</td>" +
+                "<td>" + attrValue + "</td>" +
+                "<td>" + timeStr + "</td>" +
+                "<td><code>" + (e.method || "") + "</code></td>" +
+                '<td style="text-align:center;"><span class="badge ' + statusClass + '">' + e.status + "</span></td>" +
+                '<td style="text-align:right;">' + (e.duration_ms != null ? e.duration_ms + " ms" : "–") + "</td>" +
+                "<td>" + (e.project || "–") + "</td>";
             searchResultsTbody.appendChild(tr);
         });
     }
