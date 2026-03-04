@@ -358,6 +358,28 @@
           <option value="">Select attribute</option>
         </select>
         <label
+          for="attr-breakdown-limit"
+          style="font-size: 0.75rem; color: var(--muted)"
+          >Show:</label
+        >
+        <select
+          id="attr-breakdown-limit"
+          style="
+            font-size: 0.75rem;
+            padding: 0.2rem 0.5rem;
+            border-radius: 0.4rem;
+            border: 1px solid rgba(148, 163, 184, 0.4);
+            background: rgba(15, 23, 42, 0.96);
+            color: var(--text);
+          "
+        >
+          <option value="10">10</option>
+          <option value="20">20</option>
+          <option value="50" selected>50</option>
+          <option value="100">100</option>
+          <option value="200">200</option>
+        </select>
+        <label
           style="
             display: flex;
             align-items: center;
@@ -392,6 +414,39 @@
           </tr>
         </tbody>
       </table>
+    </div>
+    <div
+      style="
+        padding: 0.75rem;
+        padding-bottom: 0;
+        border-top: 1px solid var(--border-soft);
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+      "
+    >
+      <div style="font-size: 0.75rem; color: var(--muted)" id="attr-breakdown-info">
+        Page 1
+      </div>
+      <div style="display: flex; gap: 0.5rem">
+        <button
+          type="button"
+          id="attr-breakdown-prev"
+          class="btn-ghost"
+          style="font-size: 0.75rem; padding: 0.2rem 0.5rem"
+          disabled
+        >
+          ‹ Prev
+        </button>
+        <button
+          type="button"
+          id="attr-breakdown-next"
+          class="btn-ghost"
+          style="font-size: 0.75rem; padding: 0.2rem 0.5rem"
+        >
+          Next ›
+        </button>
+      </div>
     </div>
   </div>
 
@@ -1109,6 +1164,11 @@
       "#attr-breakdown-table tbody",
     );
     let attrBreakdownCounts = [];
+    const attrBreakdownLimit = document.getElementById("attr-breakdown-limit");
+    const attrBreakdownPrev = document.getElementById("attr-breakdown-prev");
+    const attrBreakdownNext = document.getElementById("attr-breakdown-next");
+    const attrBreakdownInfo = document.getElementById("attr-breakdown-info");
+    let attrBreakdownOffset = 0;
 
     function displayValue(val, stripPath) {
       if (!stripPath || !val) return val;
@@ -1125,12 +1185,16 @@
       const stripPath = attrBreakdownStripPath
         ? attrBreakdownStripPath.checked
         : false;
-      if (attrBreakdownCounts.length === 0) {
+
+      const data = attrBreakdownCounts;
+      const counts = data.counts || [];
+
+      if (counts.length === 0) {
         attrBreakdownTbody.innerHTML =
           '<tr><td colspan="2" style="color: var(--muted); font-size: 0.8rem">Select an attribute to see value counts.</td></tr>';
         return;
       }
-      let rows = attrBreakdownCounts;
+      let rows = counts;
       if (stripPath) {
         const byDisplay = {};
         rows.forEach((r) => {
@@ -1153,6 +1217,20 @@
         tr.appendChild(countTd);
         attrBreakdownTbody.appendChild(tr);
       });
+
+      const limit = attrBreakdownLimit ? parseInt(attrBreakdownLimit.value) : 50;
+      const currentPage = Math.floor(attrBreakdownOffset / limit) + 1;
+      const totalPages = Math.ceil((data.total || 0) / limit);
+      if (attrBreakdownInfo) {
+        attrBreakdownInfo.textContent =
+          "Page " + currentPage + " of " + (totalPages || 1);
+      }
+      if (attrBreakdownPrev) {
+        attrBreakdownPrev.disabled = attrBreakdownOffset === 0;
+      }
+      if (attrBreakdownNext) {
+        attrBreakdownNext.disabled = !data.has_more;
+      }
     }
 
     function fetchAttributeKeys() {
@@ -1204,13 +1282,14 @@
         renderAttrBreakdownTable();
         return;
       }
+      const limit = attrBreakdownLimit ? parseInt(attrBreakdownLimit.value) : 50;
       const url = withFilters(
-        "/v1/metrics/attribute-value-counts?" + rangeParam() + "&key=" + encodeURIComponent(key),
+        "/v1/metrics/attribute-value-counts?" + rangeParam() + "&key=" + encodeURIComponent(key) + "&limit=" + limit + "&offset=" + attrBreakdownOffset,
       );
       fetch(url)
         .then((res) => res.json())
         .then((data) => {
-          attrBreakdownCounts = data.counts || [];
+          attrBreakdownCounts = data;
           renderAttrBreakdownTable();
         })
         .catch((err) => {
@@ -1222,6 +1301,27 @@
 
     if (attrBreakdownKey) {
       attrBreakdownKey.addEventListener("change", function () {
+        attrBreakdownOffset = 0;
+        fetchAttributeValueCounts();
+      });
+    }
+    if (attrBreakdownLimit) {
+      attrBreakdownLimit.addEventListener("change", function () {
+        attrBreakdownOffset = 0;
+        fetchAttributeValueCounts();
+      });
+    }
+    if (attrBreakdownPrev) {
+      attrBreakdownPrev.addEventListener("click", function () {
+        const limit = attrBreakdownLimit ? parseInt(attrBreakdownLimit.value) : 50;
+        attrBreakdownOffset = Math.max(0, attrBreakdownOffset - limit);
+        fetchAttributeValueCounts();
+      });
+    }
+    if (attrBreakdownNext) {
+      attrBreakdownNext.addEventListener("click", function () {
+        const limit = attrBreakdownLimit ? parseInt(attrBreakdownLimit.value) : 50;
+        attrBreakdownOffset += limit;
         fetchAttributeValueCounts();
       });
     }

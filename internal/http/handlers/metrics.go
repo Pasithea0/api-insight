@@ -591,11 +591,28 @@ func AttributeValueCounts(db *gorm.DB) fasthttp.RequestHandler {
 		cutoff, _ := parseRange(ctx)
 		userID := strconv.Itoa(int(user.ID))
 
+		limit := 100
+		if s := string(ctx.QueryArgs().Peek("limit")); s != "" {
+			if n, err := strconv.Atoi(s); err == nil && n > 0 {
+				if n > 1000 { // Max limit
+					n = 1000
+				}
+				limit = n
+			}
+		}
+		offset := 0
+		if s := string(ctx.QueryArgs().Peek("offset")); s != "" {
+			if n, err := strconv.Atoi(s); err == nil && n >= 0 {
+				offset = n
+			}
+		}
+
 		type countRow struct {
 			Value string `json:"value"`
 			Count int64  `json:"count"`
 		}
 		var rows []countRow
+		var totalCount int64
 
 		// Handle virtual attributes (top-level columns)
 		var column string
@@ -610,14 +627,26 @@ func AttributeValueCounts(db *gorm.DB) fasthttp.RequestHandler {
 
 		if column != "" {
 			q := db.Model(&dbpkg.Event{}).
-				Where("user_id = ? AND created_at >= ?", userID, cutoff).
-				Select(column + " AS value, COUNT(*) AS count").
-				Group(column).
-				Order("count DESC")
+				Where("user_id = ? AND created_at >= ?", userID, cutoff)
 			if project != "" {
 				q = q.Where("project = ?", project)
 			}
-			if err := q.Scan(&rows).Error; err != nil {
+
+			// Manually count distinct values for virtual attributes
+			var distinctValues []string
+			if err := q.Select("DISTINCT " + column).Pluck(column, &distinctValues).Error; err != nil {
+				errResponse(ctx, fasthttp.StatusInternalServerError, "failed to count virtual attribute values")
+				return
+			}
+			totalCount = int64(len(distinctValues))
+
+			if err := q.
+				Select(column + " AS value, COUNT(*) AS count").
+				Group(column).
+				Order("count DESC").
+				Limit(limit).
+				Offset(offset).
+				Scan(&rows).Error; err != nil {
 				errResponse(ctx, fasthttp.StatusInternalServerError, "failed to query virtual attribute counts")
 				return
 			}
@@ -626,24 +655,26 @@ func AttributeValueCounts(db *gorm.DB) fasthttp.RequestHandler {
 				errResponse(ctx, fasthttp.StatusBadRequest, "invalid key")
 				return
 			}
+
+			countSQL := "SELECT COUNT(DISTINCT events.attributes::jsonb ->> ?) FROM events WHERE events.user_id = ? AND events.created_at >= ? AND jsonb_exists(events.attributes::jsonb, ?)"
+			dataSQL := "SELECT events.attributes::jsonb ->> ? AS value, COUNT(*) AS count FROM events WHERE events.user_id = ? AND events.created_at >= ? AND jsonb_exists(events.attributes::jsonb, ?) GROUP BY 1 ORDER BY count DESC LIMIT ? OFFSET ?"
+			args := []any{attrKey, userID, cutoff, attrKey}
+
 			if project != "" {
-				err := db.Raw(
-					"SELECT events.attributes::jsonb ->> ? AS value, COUNT(*) AS count FROM events WHERE events.user_id = ? AND events.project = ? AND events.created_at >= ? AND jsonb_exists(events.attributes::jsonb, ?) GROUP BY 1 ORDER BY count DESC",
-					attrKey, userID, project, cutoff, attrKey,
-				).Scan(&rows).Error
-				if err != nil {
-					errResponse(ctx, fasthttp.StatusInternalServerError, "failed to query attribute value counts")
-					return
-				}
-			} else {
-				err := db.Raw(
-					"SELECT events.attributes::jsonb ->> ? AS value, COUNT(*) AS count FROM events WHERE events.user_id = ? AND events.created_at >= ? AND jsonb_exists(events.attributes::jsonb, ?) GROUP BY 1 ORDER BY count DESC",
-					attrKey, userID, cutoff, attrKey,
-				).Scan(&rows).Error
-				if err != nil {
-					errResponse(ctx, fasthttp.StatusInternalServerError, "failed to query attribute value counts")
-					return
-				}
+				countSQL = "SELECT COUNT(DISTINCT events.attributes::jsonb ->> ?) FROM events WHERE events.user_id = ? AND events.project = ? AND events.created_at >= ? AND jsonb_exists(events.attributes::jsonb, ?)"
+				dataSQL = "SELECT events.attributes::jsonb ->> ? AS value, COUNT(*) AS count FROM events WHERE events.user_id = ? AND events.project = ? AND events.created_at >= ? AND jsonb_exists(events.attributes::jsonb, ?) GROUP BY 1 ORDER BY count DESC LIMIT ? OFFSET ?"
+				args = []any{attrKey, userID, project, cutoff, attrKey}
+			}
+
+			if err := db.Raw(countSQL, args...).Scan(&totalCount).Error; err != nil {
+				errResponse(ctx, fasthttp.StatusInternalServerError, "failed to count attribute values")
+				return
+			}
+
+			dataArgs := append(args, limit, offset)
+			if err := db.Raw(dataSQL, dataArgs...).Scan(&rows).Error; err != nil {
+				errResponse(ctx, fasthttp.StatusInternalServerError, "failed to query attribute value counts")
+				return
 			}
 		}
 
@@ -651,7 +682,8 @@ func AttributeValueCounts(db *gorm.DB) fasthttp.RequestHandler {
 		for _, row := range rows {
 			counts = append(counts, attributeValueCount{Value: row.Value, Count: row.Count})
 		}
-		jsonResponse(ctx, map[string]any{"counts": counts})
+		hasMore := offset+limit < int(totalCount)
+		jsonResponse(ctx, map[string]any{"counts": counts, "total": totalCount, "has_more": hasMore})
 	}
 }
 
