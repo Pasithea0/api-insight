@@ -2036,15 +2036,13 @@
 
     if (realtimeDownload) {
       realtimeDownload.addEventListener("click", function () {
-        const limit = realtimeLimit ? parseInt(realtimeLimit.value) : 10;
-        downloadCSV("recent", { limit: limit, offset: realtimeOffset });
+                downloadCSV("recent", { limit: 5000, offset: 0 });
       });
     }
 
     if (topRoutesDownload) {
       topRoutesDownload.addEventListener("click", function () {
-        const limit = topRoutesLimit ? parseInt(topRoutesLimit.value) : 10;
-        downloadCSV("top-routes", { limit: limit, offset: topRoutesOffset });
+                downloadCSV("top-routes", { limit: 5000, offset: 0 });
       });
     }
 
