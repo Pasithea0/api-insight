@@ -794,3 +794,168 @@ func PatternCounts(db *gorm.DB) fasthttp.RequestHandler {
 		jsonResponse(ctx, map[string]any{"counts": rows})
 	}
 }
+
+func AllEvents(db *gorm.DB) fasthttp.RequestHandler {
+	return func(ctx *fasthttp.RequestCtx) {
+		user, ok := MustUser(ctx)
+		if !ok {
+			return
+		}
+		project := string(ctx.QueryArgs().Peek("project"))
+		status := string(ctx.QueryArgs().Peek("status"))
+		attrKey := string(ctx.QueryArgs().Peek("attr_key"))
+		attrValue := string(ctx.QueryArgs().Peek("attr_value"))
+		cutoff, _ := parseRange(ctx)
+
+		limit := 50
+		if s := string(ctx.QueryArgs().Peek("limit")); s != "" {
+			if n, err := strconv.Atoi(s); err == nil && n > 0 {
+				if n > 200 {
+					n = 200
+				}
+				limit = n
+			}
+		}
+		offset := 0
+		if s := string(ctx.QueryArgs().Peek("offset")); s != "" {
+			if n, err := strconv.Atoi(s); err == nil && n >= 0 {
+				offset = n
+			}
+		}
+
+		q := db.Model(&dbpkg.Event{}).
+			Where("user_id = ?", strconv.Itoa(int(user.ID))). // Corrected line
+			Where("created_at >= ?", cutoff)
+		if project != "" {
+			q = q.Where("project = ?", project)
+		}
+		q = applyMetricsFilters(q, status, attrKey, attrValue)
+
+		var totalCount int64
+		if err := q.Count(&totalCount).Error; err != nil {
+			errResponse(ctx, fasthttp.StatusInternalServerError, "failed to count events")
+			return
+		}
+
+		var events []dbpkg.Event
+		if err := q.Order("created_at DESC").Limit(limit).Offset(offset).Find(&events).Error; err != nil {
+			errResponse(ctx, fasthttp.StatusInternalServerError, "failed to query all events")
+			return
+		}
+
+		timeFormat := "12"
+		if user.TimeFormat != "" {
+			timeFormat = user.TimeFormat
+		}
+		rows := make([]recentEvent, 0, len(events))
+		for _, e := range events {
+			rows = append(rows, recentEvent{
+				ID:         e.ID,
+				Time:       FormatEventTime(e.CreatedAt, timeFormat),
+				CreatedAt:  e.CreatedAt.UTC().Format(time.RFC3339),
+				Method:     e.Method,
+				Route:      e.Route,
+				Status:     e.Status,
+				DurationMs: e.DurationMs,
+				Project:    e.Project,
+			})
+		}
+
+		hasMore := offset+limit < int(totalCount)
+		jsonResponse(ctx, map[string]any{"events": rows, "total": totalCount, "has_more": hasMore})
+	}
+}
+
+func SearchEvents(db *gorm.DB) fasthttp.RequestHandler {
+	return func(ctx *fasthttp.RequestCtx) {
+		user, ok := MustUser(ctx)
+		if !ok {
+			return
+		}
+		field := string(ctx.QueryArgs().Peek("field")) // "route", "remote_ip", or an attribute key
+		pattern := string(ctx.QueryArgs().Peek("pattern"))
+		matchType := string(ctx.QueryArgs().Peek("type")) // "includes", "ends_with", "starts_with"
+
+		if field == "" || pattern == "" {
+			errResponse(ctx, fasthttp.StatusBadRequest, "missing field or pattern")
+			return
+		}
+
+		project := string(ctx.QueryArgs().Peek("project"))
+		cutoff, _ := parseRange(ctx)
+		userID := strconv.Itoa(int(user.ID))
+
+		var sqlPattern string
+		switch matchType {
+		case "ends_with":
+			sqlPattern = "%" + pattern
+		case "starts_with":
+			sqlPattern = pattern + "%"
+		default: // includes
+			sqlPattern = "%" + pattern + "%"
+		}
+
+		expr, ok := metricFieldExpr(field)
+		if !ok {
+			errResponse(ctx, fasthttp.StatusBadRequest, "invalid field")
+			return
+		}
+
+		limit := 100
+		if s := string(ctx.QueryArgs().Peek("limit")); s != "" {
+			if n, err := strconv.Atoi(s); err == nil && n > 0 {
+				if n > 1000 { // Max limit
+					n = 1000
+				}
+				limit = n
+			}
+		}
+		offset := 0
+		if s := string(ctx.QueryArgs().Peek("offset")); s != "" {
+			if n, err := strconv.Atoi(s); err == nil && n >= 0 {
+				offset = n
+			}
+		}
+
+		q := db.Model(&dbpkg.Event{}).
+			Where("user_id = ? AND created_at >= ?", userID, cutoff).
+			Where(expr+" LIKE ?", sqlPattern)
+
+		if project != "" {
+			q = q.Where("project = ?", project)
+		}
+
+		var totalCount int64
+		if err := q.Count(&totalCount).Error; err != nil {
+			errResponse(ctx, fasthttp.StatusInternalServerError, "failed to count search results")
+			return
+		}
+
+		var events []dbpkg.Event
+		if err := q.Order("created_at DESC").Limit(limit).Offset(offset).Find(&events).Error; err != nil {
+			errResponse(ctx, fasthttp.StatusInternalServerError, "failed to search events")
+			return
+		}
+
+		timeFormat := "12"
+		if user.TimeFormat != "" {
+			timeFormat = user.TimeFormat
+		}
+		rows := make([]recentEvent, 0, len(events))
+		for _, e := range events {
+			rows = append(rows, recentEvent{
+				ID:         e.ID,
+				Time:       FormatEventTime(e.CreatedAt, timeFormat),
+				CreatedAt:  e.CreatedAt.UTC().Format(time.RFC3339),
+				Method:     e.Method,
+				Route:      e.Route,
+				Status:     e.Status,
+				DurationMs: e.DurationMs,
+				Project:    e.Project,
+			})
+		}
+
+		hasMore := offset+limit < int(totalCount)
+		jsonResponse(ctx, map[string]any{"events": rows, "total": totalCount, "has_more": hasMore})
+	}
+}
