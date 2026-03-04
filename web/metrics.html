@@ -2050,15 +2050,13 @@
       attrBreakdownDownload.addEventListener("click", function () {
         const key = attrBreakdownKey ? attrBreakdownKey.value : "";
         if (!key) return;
-        const limit = attrBreakdownLimit ? parseInt(attrBreakdownLimit.value) : 50;
-        downloadCSV("attribute-value-counts", { key: key, limit: limit, offset: attrBreakdownOffset });
+                downloadCSV("attribute-value-counts", { key: key, limit: 5000, offset: 0 });
       });
     }
 
     if (allEventsDownload) {
       allEventsDownload.addEventListener("click", function () {
-        const limit = allEventsLimit ? parseInt(allEventsLimit.value) : 50;
-        downloadCSV("all-events", { limit: limit, offset: allEventsOffset });
+                downloadCSV("all-events", { limit: 5000, offset: 0 });
       });
     }
 
@@ -2069,7 +2067,7 @@
         const pattern = searchInput ? searchInput.value.trim() : '';
         if (!pattern) return;
         const limit = 50;
-        downloadCSV("search-events", { field: field, type: type, pattern: pattern, limit: limit, offset: searchOffset });
+                downloadCSV("search-events", { field: field, type: type, pattern: pattern, limit: 5000, offset: 0 });
       });
     }
     lucide.createIcons();
