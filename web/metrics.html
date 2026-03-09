@@ -453,7 +453,7 @@
     </div>
   </div>
 
-  <!-- Pattern Filter: user-defined filter for counts -->
+  <!-- Comparison table: user-defined filter for counts -->
   <div class="panel" style="margin-top: 1rem">
     <div
       class="panel-header"
@@ -466,7 +466,7 @@
       "
     >
       <div>
-        <div class="panel-title">Pattern breakdown</div>
+        <div class="panel-title">Comparison table</div>
         <div class="panel-subtitle">
           Filter and count values by pattern, with optional compare-by grouping.
         </div>
@@ -484,9 +484,6 @@
             min-width: 8rem;
           "
         >
-          <option value="route">Route</option>
-          <option value="remote_ip">Remote IP</option>
-          <option value="method">Method</option>
         </select>
         <select
           id="pattern-type"
@@ -542,7 +539,7 @@
       </div>
     </div>
     <div style="max-height: 450px; overflow-y: auto">
-      <table class="table" id="pattern-breakdown-table">
+      <table class="table" id="comparison-table">
         <thead>
           <tr>
             <th>Value</th>
@@ -1349,6 +1346,22 @@
           const options = keys.map((k) => ({ value: k, label: k }));
           virtuals.forEach((v) => options.push({ value: v.value, label: v.label + " (system)" }));
 
+          if (patternField) {
+            const current = patternField.value;
+            patternField.innerHTML = "";
+            options.forEach((o) => {
+              const opt = document.createElement("option");
+              opt.value = o.value;
+              opt.textContent = o.label;
+              patternField.appendChild(opt);
+            });
+            if (options.find((o) => o.value === current)) {
+              patternField.value = current;
+            } else if (options.length > 0) {
+              patternField.value = "route";
+            }
+          }
+
           const select = attrBreakdownKey;
           if (select) {
             const current = select.value;
@@ -1456,7 +1469,7 @@
     const patternType = document.getElementById("pattern-type");
     const patternInput = document.getElementById("pattern-input");
     const patternSearchBtn = document.getElementById("pattern-search-btn");
-    const patternTbody = document.querySelector("#pattern-breakdown-table tbody");
+    const patternTbody = document.querySelector("#comparison-table tbody");
 
     function fetchPatternCounts() {
       const field = patternField ? patternField.value : "route";
