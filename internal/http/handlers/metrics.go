@@ -501,7 +501,9 @@ func AttributeKeys(db *gorm.DB) fasthttp.RequestHandler {
 			return
 		}
 
-		keys := make([]string, 0, len(rows))
+		keys := make([]string, 0, len(rows)+5)
+		// Hard-coded searchable fields
+		keys = append(keys, "status", "method", "route", "path", "remote_ip")
 		for _, row := range rows {
 			if row.Key != "" {
 				keys = append(keys, row.Key)
@@ -567,8 +569,10 @@ type attributeValueCount struct {
 
 func metricFieldExpr(field string) (string, bool) {
 	switch field {
-	case "route", "remote_ip", "method":
+	case "route", "remote_ip", "method", "path":
 		return field, true
+	case "status":
+		return "CAST(status AS TEXT)", true
 	default:
 		if !safeAttrKey.MatchString(field) {
 			return "", false
@@ -618,6 +622,7 @@ func AttributeValueCounts(db *gorm.DB) fasthttp.RequestHandler {
 
 		// Handle virtual attributes (top-level columns)
 		var column string
+		var isStatus bool
 		switch attrKey {
 		case "remote_ip":
 			column = "remote_ip"
@@ -625,6 +630,10 @@ func AttributeValueCounts(db *gorm.DB) fasthttp.RequestHandler {
 			column = "route"
 		case "method":
 			column = "method"
+		case "path":
+			column = "path"
+		case "status":
+			isStatus = true
 		}
 
 		if column != "" {
@@ -645,6 +654,30 @@ func AttributeValueCounts(db *gorm.DB) fasthttp.RequestHandler {
 			if err := q.
 				Select(column + " AS value, COUNT(*) AS count").
 				Group(column).
+				Order("count DESC").
+				Limit(limit).
+				Offset(offset).
+				Scan(&rows).Error; err != nil {
+				errResponse(ctx, fasthttp.StatusInternalServerError, "failed to query virtual attribute counts")
+				return
+			}
+		} else if isStatus {
+			q := db.Model(&dbpkg.Event{}).
+				Where("user_id = ? AND created_at >= ?", userID, cutoff)
+			if project != "" {
+				q = q.Where("project = ?", project)
+			}
+
+			var distinctValues []string
+			if err := q.Select("DISTINCT status").Pluck("status", &distinctValues).Error; err != nil {
+				errResponse(ctx, fasthttp.StatusInternalServerError, "failed to count virtual attribute values")
+				return
+			}
+			totalCount = int64(len(distinctValues))
+
+			if err := q.
+				Select("CAST(status AS TEXT) AS value, COUNT(*) AS count").
+				Group("status").
 				Order("count DESC").
 				Limit(limit).
 				Offset(offset).
