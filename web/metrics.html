@@ -1333,80 +1333,84 @@
     }
 
     function fetchAttributeKeys() {
-      fetch(withFilters("/v1/metrics/attribute-keys?" + rangeParam()))
-        .then((res) => res.json())
-        .then((data) => {
-          const keys = data.keys || [];
-          keys.sort();
-          const virtuals = [
-            { value: "remote_ip", label: "Remote IP" },
-            { value: "route", label: "Route" },
-            { value: "method", label: "Method" },
-          ];
-          const options = keys.map((k) => ({ value: k, label: k }));
-          virtuals.forEach((v) => options.push({ value: v.value, label: v.label + " (system)" }));
+      try {
+        fetch(withFilters("/v1/metrics/attribute-keys?" + rangeParam()))
+          .then((res) => res.json())
+          .then((data) => {
+            const keys = data.keys || [];
+            keys.sort();
+            const virtuals = [
+              { value: "remote_ip", label: "Remote IP" },
+              { value: "route", label: "Route" },
+              { value: "method", label: "Method" },
+            ];
+            const options = keys.map((k) => ({ value: k, label: k }));
+            virtuals.forEach((v) => options.push({ value: v.value, label: v.label + " (system)" }));
 
-          if (patternField) {
-            const current = patternField.value;
-            patternField.innerHTML = "";
-            options.forEach((o) => {
-              const opt = document.createElement("option");
-              opt.value = o.value;
-              opt.textContent = o.label;
-              patternField.appendChild(opt);
-            });
-            if (options.find((o) => o.value === current)) {
-              patternField.value = current;
-            } else if (options.length > 0) {
-              patternField.value = "route";
+            if (patternField) {
+              const current = patternField.value;
+              patternField.innerHTML = "";
+              options.forEach((o) => {
+                const opt = document.createElement("option");
+                opt.value = o.value;
+                opt.textContent = o.label;
+                patternField.appendChild(opt);
+              });
+              if (options.find((o) => o.value === current)) {
+                patternField.value = current;
+              } else if (options.length > 0) {
+                patternField.value = "route";
+              }
             }
-          }
 
-          const select = attrBreakdownKey;
-          if (select) {
-            const current = select.value;
-            select.innerHTML = '<option value="">Select attribute</option>';
-            options.forEach((o) => {
-              const opt = document.createElement("option");
-              opt.value = o.value;
-              opt.textContent = o.label;
-              select.appendChild(opt);
-            });
-            if (options.find((o) => o.value === current)) select.value = current;
-          }
-
-          if (patternCompare) {
-            const currentCompare = patternCompare.value;
-            patternCompare.innerHTML = '<option value="">None</option>';
-            options.forEach((o) => {
-              const opt = document.createElement("option");
-              opt.value = o.value;
-              opt.textContent = o.label;
-              patternCompare.appendChild(opt);
-            });
-            if (options.find((o) => o.value === currentCompare)) patternCompare.value = currentCompare;
-          }
-
-          const searchFieldEl = document.getElementById("search-field");
-          if (searchFieldEl) {
-            const current = searchFieldEl.value;
-            searchFieldEl.innerHTML = "";
-            const searchOptions = keys.map((k) => ({ value: k, label: k })).concat(virtuals);
-            searchOptions.sort((a,b) => a.label.localeCompare(b.label));
-            searchOptions.forEach((o) => {
-              const opt = document.createElement("option");
-              opt.value = o.value;
-              opt.textContent = o.label;
-              searchFieldEl.appendChild(opt);
-            });
-            if (searchOptions.find((o) => o.value === current)) {
-                searchFieldEl.value = current;
-            } else if (searchOptions.length > 0) {
-                searchFieldEl.value = 'route';
+            const select = attrBreakdownKey;
+            if (select) {
+              const current = select.value;
+              select.innerHTML = '<option value="">Select attribute</option>';
+              options.forEach((o) => {
+                const opt = document.createElement("option");
+                opt.value = o.value;
+                opt.textContent = o.label;
+                select.appendChild(opt);
+              });
+              if (options.find((o) => o.value === current)) select.value = current;
             }
-          }
-        })
-        .catch((err) => console.error("failed to load attribute keys", err));
+
+            if (patternCompare) {
+              const currentCompare = patternCompare.value;
+              patternCompare.innerHTML = '<option value="">None</option>';
+              options.forEach((o) => {
+                const opt = document.createElement("option");
+                opt.value = o.value;
+                opt.textContent = o.label;
+                patternCompare.appendChild(opt);
+              });
+              if (options.find((o) => o.value === currentCompare)) patternCompare.value = currentCompare;
+            }
+
+            const searchFieldEl = document.getElementById("search-field");
+            if (searchFieldEl) {
+              const current = searchFieldEl.value;
+              searchFieldEl.innerHTML = "";
+              const searchOptions = keys.map((k) => ({ value: k, label: k })).concat(virtuals);
+              searchOptions.sort((a,b) => a.label.localeCompare(b.label));
+              searchOptions.forEach((o) => {
+                const opt = document.createElement("option");
+                opt.value = o.value;
+                opt.textContent = o.label;
+                searchFieldEl.appendChild(opt);
+              });
+              if (searchOptions.find((o) => o.value === current)) {
+                  searchFieldEl.value = current;
+              } else if (searchOptions.length > 0) {
+                  searchFieldEl.value = 'route';
+              }
+            }
+          })
+          .catch((err) => console.error("failed to load attribute keys", err));
+        } catch (err) {
+          console.error("failed to load attribute keys", err);
+        }
     }
 
     function fetchAttributeValueCounts() {
@@ -1927,6 +1931,7 @@
       fetchAttributeValueCounts();
       fetchAllEvents();
       fetchSearchResults();
+      fetchAttributeKeys();
     }
 
     // Search events
