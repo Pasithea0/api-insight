@@ -848,9 +848,9 @@
       const errMeta = document.getElementById("card-errors-meta");
       const periodLabel =
         periodHours === 24 ? "Last 24 hours" : "Last " + periodHours + " hours";
-      if (totalMeta) totalMeta.textContent = "Total requests – " + periodLabel;
+      if (totalMeta) totalMeta.textContent = periodLabel;
       if (avgMeta)
-        avgMeta.textContent = "Average response time – " + periodLabel;
+        avgMeta.textContent = periodLabel;
       if (errMeta) errMeta.textContent = "Status ≥ 400 – " + periodLabel;
 
       const setText = (id, text) => {
