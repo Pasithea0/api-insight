@@ -6,37 +6,36 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/valyala/fasthttp"
+	"github.com/gofiber/fiber/v2"
 
 	"apiinsight/internal/config"
 )
 
 // InternalReporting reports metrics about this API Insight instance to itself.
 // If APP_INTERNAL_API_KEY is not set, this middleware does nothing.
-func InternalReporting(cfg *config.Config, ingestURL string) func(fasthttp.RequestHandler) fasthttp.RequestHandler {
+func InternalReporting(cfg *config.Config, ingestURL string) fiber.Handler {
 	if cfg.InternalAPIKey == "" {
-		return func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
-			return next
+		return func(c *fiber.Ctx) error {
+			return c.Next()
 		}
 	}
 
-	return func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
-		return func(ctx *fasthttp.RequestCtx) {
-			start := time.Now()
-			next(ctx)
-			duration := time.Since(start)
+	return func(c *fiber.Ctx) error {
+		start := time.Now()
+		err := c.Next()
+		duration := time.Since(start)
 
-			path := string(ctx.Path())
-			if path == "/v1/events" || path == "/v1/metrics" || path == "/metrics" || path == "/healthz" || path == "/login" {
-				return
-			}
+		path := string(c.Path())
+		if path == "/v1/events" || path == "/v1/metrics" || path == "/metrics" || path == "/healthz" || path == "/login" {
+			return err
+		}
 
-			status := ctx.Response.StatusCode()
-			method := string(ctx.Method())
-			remoteAddr := ctx.RemoteAddr().String()
+		status := c.Response().StatusCode()
+		method := string(c.Method())
+		remoteAddr := c.IP()
 
-			go func() {
-				event := map[string]interface{}{
+		go func() {
+			event := map[string]interface{}{
 					"timestamp":   time.Now(),
 					"path":        path,
 					"method":      method,
@@ -47,16 +46,17 @@ func InternalReporting(cfg *config.Config, ingestURL string) func(fasthttp.Reque
 						"env": "internal",
 					},
 				}
-				payload := map[string]interface{}{
+			payload := map[string]interface{}{
 					"events": []interface{}{event},
 				}
-				body, _ := json.Marshal(payload)
-				req, _ := http.NewRequest("POST", ingestURL, bytes.NewReader(body))
-				req.Header.Set("Content-Type", "application/json")
-				req.Header.Set("Authorization", "Bearer "+cfg.InternalAPIKey)
-				client := &http.Client{Timeout: 2 * time.Second}
-				_, _ = client.Do(req)
-			}()
-		}
+			body, _ := json.Marshal(payload)
+			req, _ := http.NewRequest("POST", ingestURL, bytes.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Authorization", "Bearer "+cfg.InternalAPIKey)
+			client := &http.Client{Timeout: 2 * time.Second}
+			_, _ = client.Do(req)
+		}()
+
+		return err
 	}
 }

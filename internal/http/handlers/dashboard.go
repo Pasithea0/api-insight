@@ -3,7 +3,7 @@ package handlers
 import (
 	"bytes"
 
-	"github.com/valyala/fasthttp"
+	"github.com/gofiber/fiber/v2"
 	"gorm.io/gorm"
 
 	"apiinsight/internal/config"
@@ -36,7 +36,7 @@ type ProjectNav struct {
 	Environment string
 }
 
-func getLayoutData(ctx *fasthttp.RequestCtx, cfg *config.Config, activePage, breadcrumb, pageTemplate string) LayoutData {
+func getLayoutData(ctx *fiber.Ctx, cfg *config.Config, activePage, breadcrumb, pageTemplate string) LayoutData {
 	isAdmin := false
 	username := ""
 	timeFormat := "12"
@@ -68,7 +68,7 @@ func getLayoutData(ctx *fasthttp.RequestCtx, cfg *config.Config, activePage, bre
 	}
 }
 
-func populateProjectsForLayout(data *LayoutData, db *gorm.DB, cfg *config.Config, ctx *fasthttp.RequestCtx, activeProject string) {
+func populateProjectsForLayout(data *LayoutData, db *gorm.DB, cfg *config.Config, ctx *fiber.Ctx, activeProject string) {
 	if u, ok := httpctx.UserFromCtx(ctx); ok {
 		if user, ok := u.(*dbpkg.User); ok && user != nil {
 			var keys []dbpkg.APIKey
@@ -111,40 +111,36 @@ func populateProjectsForLayout(data *LayoutData, db *gorm.DB, cfg *config.Config
 	}
 }
 
-func renderLayout(ctx *fasthttp.RequestCtx, data LayoutData) {
+func renderLayout(ctx *fiber.Ctx, data LayoutData) error {
 	var buf bytes.Buffer
 	if err := ui.Templates().ExecuteTemplate(&buf, "layout", data); err != nil {
-		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
-		ctx.SetBodyString("render error")
-		return
+		return ctx.Status(fiber.StatusInternalServerError).SendString("render error")
 	}
-	ctx.SetContentType("text/html; charset=utf-8")
-	ctx.SetBody(buf.Bytes())
+	ctx.Set("Content-Type", "text/html; charset=utf-8")
+	return ctx.Send(buf.Bytes())
 }
 
-func MetricsPage(db *gorm.DB, cfg *config.Config) fasthttp.RequestHandler {
-	return func(ctx *fasthttp.RequestCtx) {
-		activeProject := string(ctx.QueryArgs().Peek("project"))
+func MetricsPage(db *gorm.DB, cfg *config.Config) fiber.Handler {
+	return func(ctx *fiber.Ctx) error {
+		activeProject := ctx.Query("project")
 		data := getLayoutData(ctx, cfg, "metrics", "Metrics", "metrics")
 		data.ActiveProject = activeProject
 		populateProjectsForLayout(&data, db, cfg, ctx, activeProject)
-		renderLayout(ctx, data)
+		return renderLayout(ctx, data)
 	}
 }
 
-func SettingsPage(db *gorm.DB, cfg *config.Config) fasthttp.RequestHandler {
-	return func(ctx *fasthttp.RequestCtx) {
+func SettingsPage(db *gorm.DB, cfg *config.Config) fiber.Handler {
+	return func(ctx *fiber.Ctx) error {
 		user, ok := MustUser(ctx)
 		if !ok {
-			return
+			return nil
 		}
 		isSuperAdmin := user.Username == cfg.AdminUser
 
 		var apiKeys []dbpkg.APIKey
 		if err := db.Where("user_id = ?", user.ID).Order("created_at DESC").Find(&apiKeys).Error; err != nil {
-			ctx.SetStatusCode(fasthttp.StatusInternalServerError)
-			ctx.SetBodyString("failed to load API keys")
-			return
+			return ctx.Status(fiber.StatusInternalServerError).SendString("failed to load API keys")
 		}
 
 		if isSuperAdmin && cfg.InternalAPIKey != "" {
@@ -178,45 +174,41 @@ func SettingsPage(db *gorm.DB, cfg *config.Config) fasthttp.RequestHandler {
 		data.APIKeys = apiKeys
 		data.InternalAPIKey = cfg.InternalAPIKey
 		populateProjectsForLayout(&data, db, cfg, ctx, "")
-		renderLayout(ctx, data)
+		return renderLayout(ctx, data)
 	}
 }
 
-func UsersPage(db *gorm.DB, cfg *config.Config) fasthttp.RequestHandler {
-	return func(ctx *fasthttp.RequestCtx) {
+func UsersPage(db *gorm.DB, cfg *config.Config) fiber.Handler {
+	return func(ctx *fiber.Ctx) error {
 		user, ok := MustUser(ctx)
 		if !ok {
-			return
+			return nil
 		}
 		isAdmin := user.IsAdmin || user.Username == cfg.AdminUser
 		if !isAdmin {
-			ctx.SetStatusCode(fasthttp.StatusForbidden)
-			ctx.SetBodyString("forbidden")
-			return
+			return ctx.Status(fiber.StatusForbidden).SendString("forbidden")
 		}
 
 		var users []dbpkg.User
 		if err := db.Order("created_at DESC").Find(&users).Error; err != nil {
-			ctx.SetStatusCode(fasthttp.StatusInternalServerError)
-			ctx.SetBodyString("failed to load users")
-			return
+			return ctx.Status(fiber.StatusInternalServerError).SendString("failed to load users")
 		}
 
 		data := getLayoutData(ctx, cfg, "users", "Users", "users")
 		data.Users = users
 		populateProjectsForLayout(&data, db, cfg, ctx, "")
-		renderLayout(ctx, data)
+		return renderLayout(ctx, data)
 	}
 }
 
-func UpdateDisplaySettings(db *gorm.DB, cfg *config.Config) fasthttp.RequestHandler {
-	return func(ctx *fasthttp.RequestCtx) {
+func UpdateDisplaySettings(db *gorm.DB, cfg *config.Config) fiber.Handler {
+	return func(ctx *fiber.Ctx) error {
 		user, ok := MustUser(ctx)
 		if !ok {
-			return
+			return nil
 		}
-		timeFormat := string(ctx.PostArgs().Peek("time_format"))
-		dateFormat := string(ctx.PostArgs().Peek("date_format"))
+		timeFormat := ctx.FormValue("time_format")
+		dateFormat := ctx.FormValue("date_format")
 		if timeFormat != "12" && timeFormat != "24" {
 			timeFormat = "12"
 		}
@@ -229,24 +221,22 @@ func UpdateDisplaySettings(db *gorm.DB, cfg *config.Config) fasthttp.RequestHand
 			"time_format": timeFormat,
 			"date_format": dateFormat,
 		}).Error; err != nil {
-			ctx.SetStatusCode(fasthttp.StatusInternalServerError)
-			ctx.SetBodyString("failed to save display settings")
-			return
+			return ctx.Status(fiber.StatusInternalServerError).SendString("failed to save display settings")
 		}
-		ctx.Redirect("/settings", fasthttp.StatusSeeOther)
+		return ctx.Redirect("/settings", fiber.StatusSeeOther)
 	}
 }
 
-func DocsPage(db *gorm.DB, cfg *config.Config) fasthttp.RequestHandler {
-	return func(ctx *fasthttp.RequestCtx) {
+func DocsPage(db *gorm.DB, cfg *config.Config) fiber.Handler {
+	return func(ctx *fiber.Ctx) error {
 		data := getLayoutData(ctx, cfg, "docs", "Docs", "docs")
 		populateProjectsForLayout(&data, db, cfg, ctx, "")
-		renderLayout(ctx, data)
+		return renderLayout(ctx, data)
 	}
 }
 
-func Dashboard(db *gorm.DB, _ *config.Config) fasthttp.RequestHandler {
-	return func(ctx *fasthttp.RequestCtx) {
-		ctx.Redirect("/metrics", fasthttp.StatusSeeOther)
+func Dashboard(db *gorm.DB, _ *config.Config) fiber.Handler {
+	return func(ctx *fiber.Ctx) error {
+		return ctx.Redirect("/metrics", fiber.StatusSeeOther)
 	}
 }

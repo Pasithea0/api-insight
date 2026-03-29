@@ -1,7 +1,7 @@
 package ctx
 
 import (
-	"github.com/valyala/fasthttp"
+	"github.com/gofiber/fiber/v2"
 
 	dbpkg "apiinsight/internal/db"
 )
@@ -12,12 +12,12 @@ const (
 	UserTokenKey = "userToken"
 )
 
-func SetUserToken(ctx *fasthttp.RequestCtx, token string) {
-	ctx.SetUserValue(UserTokenKey, token)
+func SetUserToken(ctx *fiber.Ctx, token string) {
+	ctx.Locals(UserTokenKey, token)
 }
 
-func UserTokenFromCtx(ctx *fasthttp.RequestCtx) (string, bool) {
-	v := ctx.UserValue(UserTokenKey)
+func UserTokenFromCtx(ctx *fiber.Ctx) (string, bool) {
+	v := ctx.Locals(UserTokenKey)
 	if v == nil {
 		return "", false
 	}
@@ -25,24 +25,24 @@ func UserTokenFromCtx(ctx *fasthttp.RequestCtx) (string, bool) {
 	return s, ok
 }
 
-func SetUser(ctx *fasthttp.RequestCtx, user any) {
-	ctx.SetUserValue(UserKey, user)
+func SetUser(ctx *fiber.Ctx, user any) {
+	ctx.Locals(UserKey, user)
 }
 
-func UserFromCtx(ctx *fasthttp.RequestCtx) (any, bool) {
-	v := ctx.UserValue(UserKey)
+func UserFromCtx(ctx *fiber.Ctx) (any, bool) {
+	v := ctx.Locals(UserKey)
 	if v == nil {
 		return nil, false
 	}
 	return v, true
 }
 
-func SetAPIKey(ctx *fasthttp.RequestCtx, apiKey *dbpkg.APIKey) {
-	ctx.SetUserValue(APIKeyKey, apiKey)
+func SetAPIKey(ctx *fiber.Ctx, apiKey *dbpkg.APIKey) {
+	ctx.Locals(APIKeyKey, apiKey)
 }
 
-func APIKeyFromCtx(ctx *fasthttp.RequestCtx) (*dbpkg.APIKey, bool) {
-	v := ctx.UserValue(APIKeyKey)
+func APIKeyFromCtx(ctx *fiber.Ctx) (*dbpkg.APIKey, bool) {
+	v := ctx.Locals(APIKeyKey)
 	if v == nil {
 		return nil, false
 	}

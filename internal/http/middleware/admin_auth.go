@@ -1,7 +1,7 @@
 package middleware
 
 import (
-	"github.com/valyala/fasthttp"
+	"github.com/gofiber/fiber/v2"
 	"gorm.io/gorm"
 
 	"apiinsight/internal/config"
@@ -10,20 +10,18 @@ import (
 )
 
 // AdminAuth returns middleware that loads the session user and sets it on the context.
-func AdminAuth(db *gorm.DB, cfg *config.Config) func(fasthttp.RequestHandler) fasthttp.RequestHandler {
-	return func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
-		return func(ctx *fasthttp.RequestCtx) {
-			cookie := ctx.Request.Header.Cookie("session_user")
-			if len(cookie) == 0 {
-				ctx.Redirect("/login", fasthttp.StatusSeeOther)
-				return
+func AdminAuth(db *gorm.DB, cfg *config.Config) func(handler fiber.Handler) fiber.Handler {
+	return func(next fiber.Handler) fiber.Handler {
+		return func(ctx *fiber.Ctx) error {
+			cookie := ctx.Cookies("session_user")
+			if cookie == "" {
+				return ctx.Redirect("/login", fiber.StatusSeeOther)
 			}
-			username := string(cookie)
+			username := cookie
 
 			var user dbpkg.User
 			if err := db.Where("username = ?", username).First(&user).Error; err != nil {
-				ctx.Redirect("/login", fasthttp.StatusSeeOther)
-				return
+				return ctx.Redirect("/login", fiber.StatusSeeOther)
 			}
 
 			if user.Username == cfg.AdminUser {
@@ -31,7 +29,7 @@ func AdminAuth(db *gorm.DB, cfg *config.Config) func(fasthttp.RequestHandler) fa
 			}
 
 			httpctx.SetUser(ctx, &user)
-			next(ctx)
+			return next(ctx)
 		}
 	}
 }

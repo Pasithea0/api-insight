@@ -3,15 +3,14 @@ package main
 import (
 	"log"
 
-	"github.com/fasthttp/router"
+	"github.com/gofiber/fiber/v2"
 	"github.com/joho/godotenv"
-	"github.com/valyala/fasthttp"
 
 	"apiinsight/internal/config"
 	"apiinsight/internal/db"
 	"apiinsight/internal/http/handlers"
+	"apiinsight/internal/http/handlers/metrics"
 	appmw "apiinsight/internal/http/middleware"
-	ui "apiinsight/web"
 )
 
 func main() {
@@ -40,69 +39,67 @@ func main() {
 
 	handlers.InitPrometheusMetrics()
 
-	r := router.New()
+	app := fiber.New()
 
 	internalURL := "http://localhost" + cfg.ListenAddr + "/v1/events"
 	if cfg.ListenAddr != "" && cfg.ListenAddr[0] != ':' {
 		internalURL = "http://" + cfg.ListenAddr + "/v1/events"
 	}
 
-	// Global middleware chain: request logger, then internal reporting, then router
-	handler := handlers.RequestLogger(appmw.InternalReporting(cfg, internalURL)(r.Handler))
+	app.Use(appmw.InternalReporting(cfg, internalURL))
 
-	r.GET("/healthz", func(ctx *fasthttp.RequestCtx) {
-		ctx.SetStatusCode(fasthttp.StatusOK)
-		ctx.SetBodyString("ok")
+	app.Get("/healthz", func(c *fiber.Ctx) error {
+		return c.SendString("ok")
 	})
 
-	r.ServeFS("/static/{filepath:*}", ui.StaticFS())
+	app.Static("/static/", "./web/static")
 
-	r.GET("/login", handlers.LoginForm(cfg))
-	r.POST("/login", handlers.LoginSubmit(sqlDB))
-	r.POST("/logout", handlers.Logout())
+	app.Get("/login", handlers.LoginForm(cfg))
+	app.Post("/login", handlers.LoginSubmit(sqlDB))
+	app.Post("/logout", handlers.Logout())
 
-	r.GET("/", appmw.AdminAuth(sqlDB, cfg)(handlers.Dashboard(sqlDB, cfg)))
-	r.GET("/metrics", appmw.AdminAuth(sqlDB, cfg)(handlers.MetricsPage(sqlDB, cfg)))
-	r.GET("/docs", appmw.AdminAuth(sqlDB, cfg)(handlers.DocsPage(sqlDB, cfg)))
-	r.GET("/settings", appmw.AdminAuth(sqlDB, cfg)(handlers.SettingsPage(sqlDB, cfg)))
-	r.GET("/users", appmw.AdminAuth(sqlDB, cfg)(handlers.UsersPage(sqlDB, cfg)))
+	adminAuth := appmw.AdminAuth(sqlDB, cfg)
+	app.Get("/", adminAuth(handlers.Dashboard(sqlDB, cfg)))
+	app.Get("/metrics", adminAuth(handlers.MetricsPage(sqlDB, cfg)))
+	app.Get("/docs", adminAuth(handlers.DocsPage(sqlDB, cfg)))
+	app.Get("/settings", adminAuth(handlers.SettingsPage(sqlDB, cfg)))
+	app.Get("/users", adminAuth(handlers.UsersPage(sqlDB, cfg)))
 
-	r.POST("/admin/users/create", appmw.AdminAuth(sqlDB, cfg)(handlers.CreateUser(sqlDB)))
-	r.POST("/admin/users/{id}/reset-password", appmw.AdminAuth(sqlDB, cfg)(handlers.ResetPassword(sqlDB, cfg)))
-	r.POST("/admin/users/{id}/delete", appmw.AdminAuth(sqlDB, cfg)(handlers.DeleteUser(sqlDB, cfg)))
+	app.Post("/admin/users/create", adminAuth(handlers.CreateUser(sqlDB)))
+	app.Post("/admin/users/:id/reset-password", adminAuth(handlers.ResetPassword(sqlDB, cfg)))
+	app.Post("/admin/users/:id/delete", adminAuth(handlers.DeleteUser(sqlDB, cfg)))
 
-	r.POST("/settings/password", appmw.AdminAuth(sqlDB, cfg)(handlers.ChangePasswordSelf(sqlDB, cfg)))
-	r.POST("/settings/display", appmw.AdminAuth(sqlDB, cfg)(handlers.UpdateDisplaySettings(sqlDB, cfg)))
+	app.Post("/settings/password", adminAuth(handlers.ChangePasswordSelf(sqlDB, cfg)))
+	app.Post("/settings/display", adminAuth(handlers.UpdateDisplaySettings(sqlDB, cfg)))
 
-	r.POST("/admin/apikeys/create", appmw.AdminAuth(sqlDB, cfg)(handlers.CreateAPIKey(sqlDB, cfg)))
-	r.POST("/admin/apikeys/delete", appmw.AdminAuth(sqlDB, cfg)(handlers.DeleteAPIKey(sqlDB, cfg)))
-	r.POST("/admin/apikeys/set-active", appmw.AdminAuth(sqlDB, cfg)(handlers.SetActiveAPIKey(sqlDB, cfg)))
+	app.Post("/admin/apikeys/create", adminAuth(handlers.CreateAPIKey(sqlDB, cfg)))
+	app.Post("/admin/apikeys/delete", adminAuth(handlers.DeleteAPIKey(sqlDB, cfg)))
+	app.Post("/admin/apikeys/set-active", adminAuth(handlers.SetActiveAPIKey(sqlDB, cfg)))
 
-	r.GET("/admin/healthz", appmw.AdminAuth(sqlDB, cfg)(func(ctx *fasthttp.RequestCtx) {
-		ctx.SetStatusCode(fasthttp.StatusOK)
-		ctx.SetBodyString("admin ok")
+	app.Get("/admin/healthz", adminAuth(func(c *fiber.Ctx) error {
+		return c.SendString("admin ok")
 	}))
 
-	r.GET("/v1/metrics", handlers.ProjectMetricsHandler(sqlDB))
-	r.POST("/v1/events", appmw.BearerAuth(sqlDB)(handlers.IngestHandler(sqlDB, cfg)))
+	app.Get("/v1/metrics", handlers.ProjectMetricsHandler(sqlDB))
+	app.Post("/v1/events", appmw.BearerAuth(sqlDB)(handlers.IngestHandler(sqlDB, cfg)))
 
-	r.GET("/v1/metrics/traffic", appmw.AdminAuth(sqlDB, cfg)(handlers.TrafficSeries(sqlDB)))
-	r.GET("/v1/metrics/error-rate", appmw.AdminAuth(sqlDB, cfg)(handlers.ErrorRateSeries(sqlDB)))
-	r.GET("/v1/metrics/latency-percentiles", appmw.AdminAuth(sqlDB, cfg)(handlers.LatencyPercentilesSeries(sqlDB)))
-	r.GET("/v1/metrics/avg-duration", appmw.AdminAuth(sqlDB, cfg)(handlers.AvgDuration(sqlDB)))
-	r.GET("/v1/metrics/attribute-keys", appmw.AdminAuth(sqlDB, cfg)(handlers.AttributeKeys(sqlDB)))
-	r.GET("/v1/metrics/attribute-values", appmw.AdminAuth(sqlDB, cfg)(handlers.AttributeValues(sqlDB)))
-	r.GET("/v1/metrics/attribute-value-counts", appmw.AdminAuth(sqlDB, cfg)(handlers.AttributeValueCounts(sqlDB)))
-	r.GET("/v1/metrics/pattern-counts", appmw.AdminAuth(sqlDB, cfg)(handlers.PatternCounts(sqlDB)))
-	r.GET("/v1/metrics/top-routes", appmw.AdminAuth(sqlDB, cfg)(handlers.TopRoutes(sqlDB)))
-	r.GET("/v1/metrics/recent", appmw.AdminAuth(sqlDB, cfg)(handlers.RecentEvents(sqlDB)))
-	r.GET("/v1/metrics/all-events", appmw.AdminAuth(sqlDB, cfg)(handlers.AllEvents(sqlDB)))
-	r.GET("/v1/metrics/search-events", appmw.AdminAuth(sqlDB, cfg)(handlers.SearchEvents(sqlDB)))
-	r.GET("/v1/metrics/export", appmw.AdminAuth(sqlDB, cfg)(handlers.Export(sqlDB)))
-	r.GET("/v1/metrics/event/{id}", appmw.AdminAuth(sqlDB, cfg)(handlers.EventDetail(sqlDB)))
+	app.Get("/v1/metrics/traffic", adminAuth(metrics.TrafficSeries(sqlDB)))
+	app.Get("/v1/metrics/error-rate", adminAuth(metrics.ErrorRateSeries(sqlDB)))
+	app.Get("/v1/metrics/latency-percentiles", adminAuth(metrics.LatencyPercentilesSeries(sqlDB)))
+	app.Get("/v1/metrics/avg-duration", adminAuth(metrics.AvgDuration(sqlDB)))
+	app.Get("/v1/metrics/attribute-keys", adminAuth(metrics.AttributeKeys(sqlDB)))
+	app.Get("/v1/metrics/attribute-values", adminAuth(metrics.AttributeValues(sqlDB)))
+	app.Get("/v1/metrics/attribute-value-counts", adminAuth(metrics.AttributeValueCounts(sqlDB)))
+	app.Get("/v1/metrics/pattern-counts", adminAuth(metrics.PatternCounts(sqlDB)))
+	app.Get("/v1/metrics/top-routes", adminAuth(metrics.TopRoutes(sqlDB)))
+	app.Get("/v1/metrics/recent", adminAuth(metrics.RecentEvents(sqlDB)))
+	app.Get("/v1/metrics/all-events", adminAuth(metrics.AllEvents(sqlDB)))
+	app.Get("/v1/metrics/search-events", adminAuth(metrics.SearchEvents(sqlDB)))
+	app.Get("/v1/metrics/export", adminAuth(metrics.Export(sqlDB)))
+	app.Get("/v1/metrics/event/:id", adminAuth(handlers.EventDetail(sqlDB)))
 
 	log.Printf("apiinsight listening on %s", cfg.ListenAddr)
-	if err := fasthttp.ListenAndServe(cfg.ListenAddr, handler); err != nil {
+	if err := app.Listen(cfg.ListenAddr); err != nil {
 		log.Fatalf("server error: %v", err)
 	}
 }

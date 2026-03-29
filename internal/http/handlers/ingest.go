@@ -5,8 +5,8 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/gofiber/fiber/v2"
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/valyala/fasthttp"
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
 
@@ -56,18 +56,14 @@ type ingestRequest struct {
 	Events []IngestEvent `json:"events"`
 }
 
-func IngestHandler(db *gorm.DB, cfg *config.Config) fasthttp.RequestHandler {
-	return func(ctx *fasthttp.RequestCtx) {
+func IngestHandler(db *gorm.DB, cfg *config.Config) fiber.Handler {
+	return func(ctx *fiber.Ctx) error {
 		var payload ingestRequest
-		if err := json.Unmarshal(ctx.PostBody(), &payload); err != nil {
-			ctx.SetStatusCode(fasthttp.StatusBadRequest)
-			ctx.SetBodyString("invalid JSON body")
-			return
+		if err := json.Unmarshal(ctx.Body(), &payload); err != nil {
+			return ctx.Status(fiber.StatusBadRequest).SendString("invalid JSON body")
 		}
 		if len(payload.Events) == 0 {
-			ctx.SetStatusCode(fasthttp.StatusBadRequest)
-			ctx.SetBodyString("no events provided")
-			return
+			return ctx.Status(fiber.StatusBadRequest).SendString("no events provided")
 		}
 
 		now := time.Now()
@@ -126,19 +122,15 @@ func IngestHandler(db *gorm.DB, cfg *config.Config) fasthttp.RequestHandler {
 		}
 
 		if len(records) == 0 {
-			ctx.SetStatusCode(fasthttp.StatusBadRequest)
-			ctx.SetBodyString("no valid events after validation")
-			return
+			return ctx.Status(fiber.StatusBadRequest).SendString("no valid events after validation")
 		}
 
 		if err := db.Create(&records).Error; err != nil {
-			ctx.SetStatusCode(fasthttp.StatusInternalServerError)
-			ctx.SetBodyString("failed to persist events")
-			return
+			return ctx.Status(fiber.StatusInternalServerError).SendString("failed to persist events")
 		}
 
-		ctx.SetStatusCode(fasthttp.StatusAccepted)
-		ctx.SetContentType("application/json")
-		ctx.SetBodyString(`{"status":"accepted","count":` + strconv.Itoa(len(records)) + `}`)
+		ctx.Status(fiber.StatusAccepted)
+		ctx.Set("Content-Type", "application/json")
+		return ctx.SendString(`{"status":"accepted","count":` + strconv.Itoa(len(records)) + `}`)
 	}
 }

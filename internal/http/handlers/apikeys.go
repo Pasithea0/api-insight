@@ -5,7 +5,7 @@ import (
 	"encoding/base64"
 	"strconv"
 
-	"github.com/valyala/fasthttp"
+	"github.com/gofiber/fiber/v2"
 	"gorm.io/gorm"
 
 	"apiinsight/internal/config"
@@ -20,16 +20,14 @@ func generateAPIKey() (string, error) {
 	return "ai_" + base64.URLEncoding.EncodeToString(b), nil
 }
 
-func CreateAPIKey(db *gorm.DB, cfg *config.Config) fasthttp.RequestHandler {
-	return func(ctx *fasthttp.RequestCtx) {
-		name := string(ctx.PostArgs().Peek("name"))
-		environment := string(ctx.PostArgs().Peek("environment"))
-		retentionStr := string(ctx.PostArgs().Peek("retention_days"))
+func CreateAPIKey(db *gorm.DB, cfg *config.Config) fiber.Handler {
+	return func(ctx *fiber.Ctx) error {
+		name := ctx.FormValue("name")
+		environment := ctx.FormValue("environment")
+		retentionStr := ctx.FormValue("retention_days")
 
 		if name == "" || environment == "" {
-			ctx.SetStatusCode(fasthttp.StatusBadRequest)
-			ctx.SetBodyString("name and environment required")
-			return
+			return ctx.Status(fiber.StatusBadRequest).SendString("name and environment required")
 		}
 
 		maxRetention := cfg.RetentionDays
@@ -42,21 +40,17 @@ func CreateAPIKey(db *gorm.DB, cfg *config.Config) fasthttp.RequestHandler {
 					retentionDays = v
 				}
 			} else {
-				ctx.SetStatusCode(fasthttp.StatusBadRequest)
-				ctx.SetBodyString("invalid retention_days")
-				return
+				return ctx.Status(fiber.StatusBadRequest).SendString("invalid retention_days")
 			}
 		}
 
 		user, ok := MustUser(ctx)
 		if !ok {
-			return
+			return nil
 		}
 		key, err := generateAPIKey()
 		if err != nil {
-			ctx.SetStatusCode(fasthttp.StatusInternalServerError)
-			ctx.SetBodyString("failed to generate API key")
-			return
+			return ctx.Status(fiber.StatusInternalServerError).SendString("failed to generate API key")
 		}
 
 		apiKey := &dbpkg.APIKey{
@@ -69,89 +63,69 @@ func CreateAPIKey(db *gorm.DB, cfg *config.Config) fasthttp.RequestHandler {
 		}
 
 		if err := db.Create(apiKey).Error; err != nil {
-			ctx.SetStatusCode(fasthttp.StatusBadRequest)
-			ctx.SetBodyString("failed to create API key (name may already exist for this user)")
-			return
+			return ctx.Status(fiber.StatusBadRequest).SendString("failed to create API key (name may already exist for this user)")
 		}
 
-		ctx.Redirect("/settings", fasthttp.StatusSeeOther)
+		return ctx.Redirect("/settings", fiber.StatusSeeOther)
 	}
 }
 
-func DeleteAPIKey(db *gorm.DB, cfg *config.Config) fasthttp.RequestHandler {
-	return func(ctx *fasthttp.RequestCtx) {
-		id := string(ctx.QueryArgs().Peek("id"))
+func DeleteAPIKey(db *gorm.DB, cfg *config.Config) fiber.Handler {
+	return func(ctx *fiber.Ctx) error {
+		id := ctx.Query("id")
 		if id == "" {
-			ctx.SetStatusCode(fasthttp.StatusBadRequest)
-			ctx.SetBodyString("id required")
-			return
+			return ctx.Status(fiber.StatusBadRequest).SendString("id required")
 		}
 
 		user, ok := MustUser(ctx)
 		if !ok {
-			return
+			return nil
 		}
 		var apiKey dbpkg.APIKey
 		if err := db.First(&apiKey, id).Error; err != nil {
-			ctx.SetStatusCode(fasthttp.StatusNotFound)
-			ctx.SetBodyString("API key not found")
-			return
+			return ctx.Status(fiber.StatusNotFound).SendString("API key not found")
 		}
 
 		if apiKey.UserID != user.ID && !user.IsAdmin {
-			ctx.SetStatusCode(fasthttp.StatusForbidden)
-			ctx.SetBodyString("forbidden")
-			return
+			return ctx.Status(fiber.StatusForbidden).SendString("forbidden")
 		}
 
 		if cfg.InternalAPIKey != "" && apiKey.Key == cfg.InternalAPIKey {
-			ctx.SetStatusCode(fasthttp.StatusForbidden)
-			ctx.SetBodyString("cannot delete internal API key")
-			return
+			return ctx.Status(fiber.StatusForbidden).SendString("cannot delete internal API key")
 		}
 
 		if err := db.Delete(&apiKey).Error; err != nil {
-			ctx.SetStatusCode(fasthttp.StatusInternalServerError)
-			ctx.SetBodyString("failed to delete API key")
-			return
+			return ctx.Status(fiber.StatusInternalServerError).SendString("failed to delete API key")
 		}
 
-		ctx.Redirect("/settings", fasthttp.StatusSeeOther)
+		return ctx.Redirect("/settings", fiber.StatusSeeOther)
 	}
 }
 
-func SetActiveAPIKey(db *gorm.DB, cfg *config.Config) fasthttp.RequestHandler {
-	return func(ctx *fasthttp.RequestCtx) {
-		id := string(ctx.PostArgs().Peek("id"))
-		activeStr := string(ctx.PostArgs().Peek("active"))
+func SetActiveAPIKey(db *gorm.DB, cfg *config.Config) fiber.Handler {
+	return func(ctx *fiber.Ctx) error {
+		id := ctx.FormValue("id")
+		activeStr := ctx.FormValue("active")
 		if id == "" || (activeStr != "true" && activeStr != "false") {
-			ctx.SetStatusCode(fasthttp.StatusBadRequest)
-			ctx.SetBodyString("id and active (true|false) required")
-			return
+			return ctx.Status(fiber.StatusBadRequest).SendString("id and active (true|false) required")
 		}
 		active := activeStr == "true"
 
 		user, ok := MustUser(ctx)
 		if !ok {
-			return
+			return nil
 		}
 		var apiKey dbpkg.APIKey
 		if err := db.First(&apiKey, id).Error; err != nil {
-			ctx.SetStatusCode(fasthttp.StatusNotFound)
-			ctx.SetBodyString("API key not found")
-			return
+			return ctx.Status(fiber.StatusNotFound).SendString("API key not found")
 		}
 		if apiKey.UserID != user.ID && !user.IsAdmin {
-			ctx.SetStatusCode(fasthttp.StatusForbidden)
-			ctx.SetBodyString("forbidden")
-			return
+			return ctx.Status(fiber.StatusForbidden).SendString("forbidden")
 		}
 
 		if err := db.Model(&apiKey).Update("active", active).Error; err != nil {
-			ctx.SetStatusCode(fasthttp.StatusInternalServerError)
-			ctx.SetBodyString("failed to update API key")
-			return
+			return ctx.Status(fiber.StatusInternalServerError).SendString("failed to update API key")
 		}
-		ctx.Redirect("/settings", fasthttp.StatusSeeOther)
+		return ctx.Redirect("/settings", fiber.StatusSeeOther)
 	}
 }

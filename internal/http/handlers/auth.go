@@ -2,8 +2,9 @@ package handlers
 
 import (
 	"bytes"
+	"time"
 
-	"github.com/valyala/fasthttp"
+	"github.com/gofiber/fiber/v2"
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 
@@ -12,123 +13,104 @@ import (
 	ui "apiinsight/web"
 )
 
-func LoginForm(_ *config.Config) fasthttp.RequestHandler {
-	return func(ctx *fasthttp.RequestCtx) {
+func LoginForm(_ *config.Config) fiber.Handler {
+	return func(ctx *fiber.Ctx) error {
 		t := ui.Templates().Lookup("login.html")
 		if t == nil {
-			ctx.SetStatusCode(fasthttp.StatusInternalServerError)
-			ctx.SetBodyString("login template not found")
-			return
+			return ctx.Status(fiber.StatusInternalServerError).SendString("login template not found")
 		}
 		var buf bytes.Buffer
 		if err := t.Execute(&buf, nil); err != nil {
-			ctx.SetStatusCode(fasthttp.StatusInternalServerError)
-			ctx.SetBodyString("render error")
-			return
+			return ctx.Status(fiber.StatusInternalServerError).SendString("render error")
 		}
-		ctx.SetContentType("text/html; charset=utf-8")
-		ctx.SetBody(buf.Bytes())
+		ctx.Set("Content-Type", "text/html; charset=utf-8")
+		return ctx.Send(buf.Bytes())
 	}
 }
 
-func LoginSubmit(db *gorm.DB) fasthttp.RequestHandler {
-	return func(ctx *fasthttp.RequestCtx) {
-		username := string(ctx.PostArgs().Peek("username"))
-		password := string(ctx.PostArgs().Peek("password"))
+func LoginSubmit(db *gorm.DB) fiber.Handler {
+	return func(ctx *fiber.Ctx) error {
+		username := ctx.FormValue("username")
+		password := ctx.FormValue("password")
 
 		var user dbpkg.User
 		if err := db.Where("username = ?", username).First(&user).Error; err != nil {
 			if err == gorm.ErrRecordNotFound {
-				renderLoginError(ctx, "Invalid username or password.")
-				return
+				return renderLoginError(ctx, "Invalid username or password.")
 			}
-			ctx.SetStatusCode(fasthttp.StatusInternalServerError)
-			ctx.SetBodyString("database error")
-			return
+			return ctx.Status(fiber.StatusInternalServerError).SendString("database error")
 		}
 
 		if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(password)); err != nil {
-			renderLoginError(ctx, "Invalid username or password.")
-			return
+			return renderLoginError(ctx, "Invalid username or password.")
 		}
 
-		var c fasthttp.Cookie
-		c.SetKey("session_user")
-		c.SetValue(username)
-		c.SetPath("/")
-		c.SetHTTPOnly(true)
-		ctx.Response.Header.SetCookie(&c)
+		ctx.Cookie(&fiber.Cookie{
+			Name:     "session_user",
+			Value:    username,
+			Path:     "/",
+			HTTPOnly: true,
+		})
 
-		ctx.Redirect("/", fasthttp.StatusSeeOther)
+		return ctx.Redirect("/", fiber.StatusSeeOther)
 	}
 }
 
-func renderLoginError(ctx *fasthttp.RequestCtx, errMsg string) {
+func renderLoginError(ctx *fiber.Ctx, errMsg string) error {
 	t := ui.Templates().Lookup("login.html")
 	if t != nil {
 		var buf bytes.Buffer
 		_ = t.Execute(&buf, map[string]any{"Error": errMsg})
-		ctx.SetStatusCode(fasthttp.StatusUnauthorized)
-		ctx.SetContentType("text/html; charset=utf-8")
-		ctx.SetBody(buf.Bytes())
+		ctx.Status(fiber.StatusUnauthorized)
+		ctx.Set("Content-Type", "text/html; charset=utf-8")
+		return ctx.Send(buf.Bytes())
 	} else {
-		ctx.SetStatusCode(fasthttp.StatusUnauthorized)
-		ctx.SetBodyString(errMsg)
+		return ctx.Status(fiber.StatusUnauthorized).SendString(errMsg)
 	}
 }
 
-func Logout() fasthttp.RequestHandler {
-	return func(ctx *fasthttp.RequestCtx) {
-		var c fasthttp.Cookie
-		c.SetKey("session_user")
-		c.SetValue("")
-		c.SetPath("/")
-		c.SetMaxAge(-1)
-		ctx.Response.Header.SetCookie(&c)
-		ctx.Redirect("/login", fasthttp.StatusSeeOther)
+func Logout() fiber.Handler {
+	return func(ctx *fiber.Ctx) error {
+		ctx.Cookie(&fiber.Cookie{
+			Name:    "session_user",
+			Value:   "",
+			Path:    "/",
+			Expires: time.Now().Add(-24 * time.Hour),
+		})
+		return ctx.Redirect("/login", fiber.StatusSeeOther)
 	}
 }
 
-func ChangePasswordSelf(db *gorm.DB, cfg *config.Config) fasthttp.RequestHandler {
-	return func(ctx *fasthttp.RequestCtx) {
+func ChangePasswordSelf(db *gorm.DB, cfg *config.Config) fiber.Handler {
+	return func(ctx *fiber.Ctx) error {
 		user, ok := MustUser(ctx)
 		if !ok {
-			return
+			return nil
 		}
-		current := string(ctx.PostArgs().Peek("current_password"))
-		newPassword := string(ctx.PostArgs().Peek("new_password"))
-		confirm := string(ctx.PostArgs().Peek("confirm_password"))
+		current := ctx.FormValue("current_password")
+		newPassword := ctx.FormValue("new_password")
+		confirm := ctx.FormValue("confirm_password")
 
 		if current == "" || newPassword == "" || confirm == "" {
-			ctx.SetStatusCode(fasthttp.StatusBadRequest)
-			ctx.SetBodyString("all password fields are required")
-			return
+			return ctx.Status(fiber.StatusBadRequest).SendString("all password fields are required")
 		}
 		if newPassword != confirm {
-			ctx.SetStatusCode(fasthttp.StatusBadRequest)
-			ctx.SetBodyString("new passwords do not match")
-			return
+			return ctx.Status(fiber.StatusBadRequest).SendString("new passwords do not match")
 		}
 
 		if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(current)); err != nil {
-			ctx.SetStatusCode(fasthttp.StatusUnauthorized)
-			ctx.SetBodyString("current password is incorrect")
-			return
+			return ctx.Status(fiber.StatusUnauthorized).SendString("current password is incorrect")
 		}
 
 		hash, err := bcrypt.GenerateFromPassword([]byte(newPassword), bcrypt.DefaultCost)
 		if err != nil {
-			ctx.SetStatusCode(fasthttp.StatusInternalServerError)
-			ctx.SetBodyString("failed to hash password")
-			return
+			return ctx.Status(fiber.StatusInternalServerError).SendString("failed to hash password")
 		}
 
 		if err := db.Model(&dbpkg.User{}).Where("id = ?", user.ID).Update("password_hash", string(hash)).Error; err != nil {
-			ctx.SetStatusCode(fasthttp.StatusInternalServerError)
-			ctx.SetBodyString("failed to update password")
-			return
+			return ctx.Status(fiber.StatusInternalServerError).SendString("failed to update password")
 		}
 
-		ctx.Redirect("/settings", fasthttp.StatusSeeOther)
+		return ctx.Redirect("/settings", fiber.StatusSeeOther)
 	}
 }

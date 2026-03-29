@@ -3,7 +3,7 @@ package handlers
 import (
 	"strconv"
 
-	"github.com/valyala/fasthttp"
+	"github.com/gofiber/fiber/v2"
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 
@@ -11,25 +11,21 @@ import (
 	dbpkg "apiinsight/internal/db"
 )
 
-func CreateUser(db *gorm.DB) fasthttp.RequestHandler {
-	return func(ctx *fasthttp.RequestCtx) {
-		username := string(ctx.PostArgs().Peek("username"))
-		password := string(ctx.PostArgs().Peek("password"))
-		isAdminStr := string(ctx.PostArgs().Peek("is_admin"))
+func CreateUser(db *gorm.DB) fiber.Handler {
+	return func(ctx *fiber.Ctx) error {
+		username := ctx.FormValue("username")
+		password := ctx.FormValue("password")
+		isAdminStr := ctx.FormValue("is_admin")
 
 		if username == "" || password == "" {
-			ctx.SetStatusCode(fasthttp.StatusBadRequest)
-			ctx.SetBodyString("username and password required")
-			return
+			return ctx.Status(fiber.StatusBadRequest).SendString("username and password required")
 		}
 
 		isAdmin := isAdminStr == "true"
 
 		hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 		if err != nil {
-			ctx.SetStatusCode(fasthttp.StatusInternalServerError)
-			ctx.SetBodyString("failed to hash password")
-			return
+			return ctx.Status(fiber.StatusInternalServerError).SendString("failed to hash password")
 		}
 
 		user := &dbpkg.User{
@@ -39,113 +35,75 @@ func CreateUser(db *gorm.DB) fasthttp.RequestHandler {
 		}
 
 		if err := db.Create(user).Error; err != nil {
-			ctx.SetStatusCode(fasthttp.StatusBadRequest)
-			ctx.SetBodyString("failed to create user (username may already exist)")
-			return
+			return ctx.Status(fiber.StatusBadRequest).SendString("failed to create user (username may already exist)")
 		}
 
-		ctx.Redirect("/users", fasthttp.StatusSeeOther)
+		return ctx.Redirect("/users", fiber.StatusSeeOther)
 	}
 }
 
-func ResetPassword(db *gorm.DB, cfg *config.Config) fasthttp.RequestHandler {
-	return func(ctx *fasthttp.RequestCtx) {
-		idVal := ctx.UserValue("id")
-		if idVal == nil {
-			ctx.SetStatusCode(fasthttp.StatusBadRequest)
-			ctx.SetBodyString("invalid user ID")
-			return
-		}
-		idStr, ok := idVal.(string)
-		if !ok {
-			ctx.SetStatusCode(fasthttp.StatusBadRequest)
-			ctx.SetBodyString("invalid user ID")
-			return
+func ResetPassword(db *gorm.DB, cfg *config.Config) fiber.Handler {
+	return func(ctx *fiber.Ctx) error {
+		idStr := ctx.Params("id")
+		if idStr == "" {
+			return ctx.Status(fiber.StatusBadRequest).SendString("invalid user ID")
 		}
 		id, err := strconv.ParseUint(idStr, 10, 32)
 		if err != nil {
-			ctx.SetStatusCode(fasthttp.StatusBadRequest)
-			ctx.SetBodyString("invalid user ID")
-			return
+			return ctx.Status(fiber.StatusBadRequest).SendString("invalid user ID")
 		}
 
 		var user dbpkg.User
 		if err := db.First(&user, id).Error; err != nil {
-			ctx.SetStatusCode(fasthttp.StatusNotFound)
-			ctx.SetBodyString("user not found")
-			return
+			return ctx.Status(fiber.StatusNotFound).SendString("user not found")
 		}
 
 		if user.Username == cfg.AdminUser {
-			ctx.SetStatusCode(fasthttp.StatusForbidden)
-			ctx.SetBodyString("cannot modify bootstrap admin user")
-			return
+			return ctx.Status(fiber.StatusForbidden).SendString("cannot modify bootstrap admin user")
 		}
 
-		password := string(ctx.PostArgs().Peek("password"))
+		password := ctx.FormValue("password")
 		if password == "" {
-			ctx.SetStatusCode(fasthttp.StatusBadRequest)
-			ctx.SetBodyString("password required")
-			return
+			return ctx.Status(fiber.StatusBadRequest).SendString("password required")
 		}
 
 		hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 		if err != nil {
-			ctx.SetStatusCode(fasthttp.StatusInternalServerError)
-			ctx.SetBodyString("failed to hash password")
-			return
+			return ctx.Status(fiber.StatusInternalServerError).SendString("failed to hash password")
 		}
 
 		if err := db.Model(&user).Update("password_hash", string(hash)).Error; err != nil {
-			ctx.SetStatusCode(fasthttp.StatusInternalServerError)
-			ctx.SetBodyString("failed to update password")
-			return
+			return ctx.Status(fiber.StatusInternalServerError).SendString("failed to update password")
 		}
 
-		ctx.Redirect("/users", fasthttp.StatusSeeOther)
+		return ctx.Redirect("/users", fiber.StatusSeeOther)
 	}
 }
 
-func DeleteUser(db *gorm.DB, cfg *config.Config) fasthttp.RequestHandler {
-	return func(ctx *fasthttp.RequestCtx) {
-		idVal := ctx.UserValue("id")
-		if idVal == nil {
-			ctx.SetStatusCode(fasthttp.StatusBadRequest)
-			ctx.SetBodyString("invalid user ID")
-			return
-		}
-		idStr, ok := idVal.(string)
-		if !ok {
-			ctx.SetStatusCode(fasthttp.StatusBadRequest)
-			ctx.SetBodyString("invalid user ID")
-			return
+func DeleteUser(db *gorm.DB, cfg *config.Config) fiber.Handler {
+	return func(ctx *fiber.Ctx) error {
+		idStr := ctx.Params("id")
+		if idStr == "" {
+			return ctx.Status(fiber.StatusBadRequest).SendString("invalid user ID")
 		}
 		id, err := strconv.ParseUint(idStr, 10, 32)
 		if err != nil {
-			ctx.SetStatusCode(fasthttp.StatusBadRequest)
-			ctx.SetBodyString("invalid user ID")
-			return
+			return ctx.Status(fiber.StatusBadRequest).SendString("invalid user ID")
 		}
 
 		var user dbpkg.User
 		if err := db.First(&user, id).Error; err != nil {
-			ctx.SetStatusCode(fasthttp.StatusNotFound)
-			ctx.SetBodyString("user not found")
-			return
+			return ctx.Status(fiber.StatusNotFound).SendString("user not found")
 		}
 
 		if user.Username == cfg.AdminUser {
-			ctx.SetStatusCode(fasthttp.StatusForbidden)
-			ctx.SetBodyString("cannot delete bootstrap admin user")
-			return
+			return ctx.Status(fiber.StatusForbidden).SendString("cannot delete bootstrap admin user")
 		}
 
 		if err := db.Delete(&user).Error; err != nil {
-			ctx.SetStatusCode(fasthttp.StatusInternalServerError)
-			ctx.SetBodyString("failed to delete user")
-			return
+			return ctx.Status(fiber.StatusInternalServerError).SendString("failed to delete user")
 		}
 
-		ctx.Redirect("/users", fasthttp.StatusSeeOther)
+		return ctx.Redirect("/users", fiber.StatusSeeOther)
 	}
 }
