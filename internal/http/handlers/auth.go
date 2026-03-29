@@ -95,12 +95,6 @@ func ChangePasswordSelf(db *gorm.DB, cfg *config.Config) fasthttp.RequestHandler
 		if !ok {
 			return
 		}
-		if user.Username == cfg.AdminUser {
-			ctx.SetStatusCode(fasthttp.StatusForbidden)
-			ctx.SetBodyString("cannot change password for bootstrap admin user")
-			return
-		}
-
 		current := string(ctx.PostArgs().Peek("current_password"))
 		newPassword := string(ctx.PostArgs().Peek("new_password"))
 		confirm := string(ctx.PostArgs().Peek("confirm_password"))

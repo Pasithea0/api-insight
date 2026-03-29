@@ -149,7 +149,6 @@
   </form>
 </div>
 
-{{if ne .Username .AdminUser}}
 <div class="panel">
   <div class="panel-header">
     <div>
@@ -175,10 +174,6 @@
     <button class="btn-primary" type="submit">
       <span>Update password</span>
     </button>
-    <div style="margin-top: 0.5rem; font-size: 0.75rem; color: var(--muted-soft);">
-      The bootstrap admin user (from APP_ADMIN_USER / APP_ADMIN_PASSWORD) must be changed via environment configuration.
-    </div>
   </form>
 </div>
-{{end}}
 {{end}}
