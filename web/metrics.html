@@ -55,14 +55,6 @@
         >
         <select
           id="realtime-limit"
-          style="
-            font-size: 0.75rem;
-            padding: 0.2rem 0.5rem;
-            border-radius: 0.4rem;
-            border: 1px solid rgba(148, 163, 184, 0.4);
-            background: rgba(15, 23, 42, 0.96);
-            color: var(--text);
-          "
         >
           <option value="10" selected>10</option>
           <option value="20">20</option>
@@ -91,7 +83,7 @@
         <button type="button" id="realtime-download" class="btn-ghost" title="Download as CSV"><span data-lucide="download" width="10" height="10"></span></button>
       </div>
     </div>
-    <div style="max-height: 280px; overflow-y: auto">
+    <div style="max-height: 247px; overflow-y: auto">
       <table class="table" id="realtime-events-table">
         <thead>
           <tr>
@@ -161,14 +153,6 @@
     >
     <select
       id="chart-range"
-      style="
-        font-size: 0.75rem;
-        padding: 0.25rem 0.5rem;
-        border-radius: 0.4rem;
-        border: 1px solid rgba(148, 163, 184, 0.4);
-        background: rgba(15, 23, 42, 0.96);
-        color: var(--text);
-      "
     >
       <option value="h0.5">Last 30 min</option>
       <option value="h1">Last 1 hour</option>
@@ -201,14 +185,6 @@
     >
     <select
       id="filter-status"
-      style="
-        font-size: 0.75rem;
-        padding: 0.25rem 0.5rem;
-        border-radius: 0.4rem;
-        border: 1px solid rgba(148, 163, 184, 0.4);
-        background: rgba(15, 23, 42, 0.96);
-        color: var(--text);
-      "
     >
       <option value="">All</option>
       <option value="success">Success (&lt; 400)</option>
@@ -251,14 +227,6 @@
         >
         <select
           id="top-routes-limit"
-          style="
-            font-size: 0.75rem;
-            padding: 0.2rem 0.5rem;
-            border-radius: 0.4rem;
-            border: 1px solid rgba(148, 163, 184, 0.4);
-            background: rgba(15, 23, 42, 0.96);
-            color: var(--text);
-          "
         >
           <option value="10" selected>10</option>
           <option value="20">20</option>
@@ -347,15 +315,6 @@
         >
         <select
           id="attr-breakdown-key"
-          style="
-            font-size: 0.75rem;
-            padding: 0.25rem 0.5rem;
-            border-radius: 0.4rem;
-            border: 1px solid rgba(148, 163, 184, 0.4);
-            background: rgba(15, 23, 42, 0.96);
-            color: var(--text);
-            min-width: 10rem;
-          "
         >
           <option value="">Select attribute</option>
         </select>
@@ -366,14 +325,6 @@
         >
         <select
           id="attr-breakdown-limit"
-          style="
-            font-size: 0.75rem;
-            padding: 0.2rem 0.5rem;
-            border-radius: 0.4rem;
-            border: 1px solid rgba(148, 163, 184, 0.4);
-            background: rgba(15, 23, 42, 0.96);
-            color: var(--text);
-          "
         >
           <option value="10">10</option>
           <option value="20">20</option>
@@ -474,27 +425,10 @@
       <div style="display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap">
         <select
           id="pattern-field"
-          style="
-            font-size: 0.75rem;
-            padding: 0.25rem 0.5rem;
-            border-radius: 0.4rem;
-            border: 1px solid rgba(148, 163, 184, 0.4);
-            background: rgba(15, 23, 42, 0.96);
-            color: var(--text);
-            min-width: 8rem;
-          "
         >
         </select>
         <select
           id="pattern-type"
-          style="
-            font-size: 0.75rem;
-            padding: 0.25rem 0.5rem;
-            border-radius: 0.4rem;
-            border: 1px solid rgba(148, 163, 184, 0.4);
-            background: rgba(15, 23, 42, 0.96);
-            color: var(--text);
-          "
         >
           <option value="includes">Includes</option>
           <option value="starts_with">Starts with</option>
@@ -504,15 +438,6 @@
           type="text"
           id="pattern-input"
           placeholder="Pattern..."
-          style="
-            font-size: 0.75rem;
-            padding: 0.25rem 0.5rem;
-            border-radius: 0.4rem;
-            border: 1px solid rgba(148, 163, 184, 0.4);
-            background: rgba(15, 23, 42, 0.96);
-            color: var(--text);
-            width: 10rem;
-          "
         />
         <label
           for="pattern-compare"
@@ -521,15 +446,6 @@
         >
         <select
           id="pattern-compare"
-          style="
-            font-size: 0.75rem;
-            padding: 0.25rem 0.5rem;
-            border-radius: 0.4rem;
-            border: 1px solid rgba(148, 163, 184, 0.4);
-            background: rgba(15, 23, 42, 0.96);
-            color: var(--text);
-            min-width: 10rem;
-          "
         >
           <option value="">None</option>
         </select>
@@ -599,14 +515,14 @@
         </div>
     </div>
     <div style="padding: 0.75rem; border-bottom: 1px solid var(--border-soft); display: flex; gap: 0.75rem; flex-wrap: wrap;">
-        <select id="search-field" style="font-size: 0.75rem; padding: 0.25rem 0.5rem; border-radius: 0.4rem; border: 1px solid rgba(148, 163, 184, 0.4); background: rgba(15, 23, 42, 0.96); color: var(--text); min-width: 8rem;">
+        <select id="search-field">
         </select>
-        <select id="search-type" style="font-size: 0.75rem; padding: 0.25rem 0.5rem; border-radius: 0.4rem; border: 1px solid rgba(148, 163, 184, 0.4); background: rgba(15, 23, 42, 0.96); color: var(--text);">
+        <select id="search-type">
             <option value="includes">Includes</option>
             <option value="starts_with">Starts with</option>
             <option value="ends_with">Ends with</option>
         </select>
-        <input type="text" id="search-input" placeholder="Pattern..." style="font-size: 0.75rem; padding: 0.25rem 0.5rem; border-radius: 0.4rem; border: 1px solid rgba(148, 163, 184, 0.4); background: rgba(15, 23, 42, 0.96); color: var(--text); width: 10rem;" />
+        <input type="text" id="search-input" placeholder="Pattern..." />
         <button id="search-btn" class="btn-primary" style="font-size: 0.75rem; padding: 0.25rem 0.75rem;">Search</button>
         <button type="button" id="search-events-download" class="btn-ghost" title="Download as CSV"><span data-lucide="download" width="10" height="10"></span></button>
     </div>
@@ -647,7 +563,7 @@
     </div>
     <div style="display: flex; align-items: center; gap: 0.5rem">
       <label for="all-events-limit" style="font-size: 0.75rem; color: var(--muted)">Show:</label>
-      <select id="all-events-limit" style="font-size: 0.75rem; padding: 0.2rem 0.5rem; border-radius: 0.4rem; border: 1px solid rgba(148, 163, 184, 0.4); background: rgba(15, 23, 42, 0.96); color: var(--text);">
+      <select id="all-events-limit">
         <option value="10">10</option>
         <option value="20">20</option>
         <option value="50" selected>50</option>

@@ -4,6 +4,7 @@ import (
 	"log"
 
 	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v2/middleware/filesystem"
 	"github.com/joho/godotenv"
 
 	"apiinsight/internal/config"
@@ -11,6 +12,8 @@ import (
 	"apiinsight/internal/http/handlers"
 	"apiinsight/internal/http/handlers/metrics"
 	appmw "apiinsight/internal/http/middleware"
+	"apiinsight/web"
+	"net/http"
 )
 
 func main() {
@@ -52,7 +55,9 @@ func main() {
 		return c.SendString("ok")
 	})
 
-	app.Static("/static/", "./web/static")
+	app.Use("/static", filesystem.New(filesystem.Config{
+		Root: http.FS(web.StaticFS()),
+	}))
 
 	app.Get("/login", handlers.LoginForm(cfg))
 	app.Post("/login", handlers.LoginSubmit(sqlDB))
