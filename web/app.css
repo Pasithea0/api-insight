@@ -184,9 +184,6 @@ body {
   border-radius: 1.25rem;
   padding: 2.25rem 2rem 2rem;
   border: 1px solid var(--border);
-  box-shadow:
-    0 24px 60px rgba(0, 0, 0, 0.8),
-    0 0 0 1px rgba(0, 0, 0, 0.9);
   position: relative;
   overflow: hidden;
 }
