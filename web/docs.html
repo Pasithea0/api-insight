@@ -23,17 +23,7 @@
     <p style="color: var(--muted); font-size: 0.85rem; margin-bottom: 0.5rem">
       Request body:
     </p>
-    <pre
-      style="
-        background: rgba(15, 23, 42, 0.96);
-        border: 1px solid var(--border-soft);
-        border-radius: 0.5rem;
-        padding: 1rem;
-        overflow-x: auto;
-        font-size: 0.8rem;
-        color: var(--text);
-      "
-    ><code>{
+    <pre><code>{
   "events": [
     {
       "path": "/api/users",
@@ -72,17 +62,7 @@
     <p style="color: var(--muted); font-size: 0.9rem; margin-bottom: 0.75rem">
       To access plaintext Prometheus metrics externally, use:
     </p>
-    <pre
-      style="
-        background: rgba(15, 23, 42, 0.96);
-        border: 1px solid var(--border-soft);
-        border-radius: 0.5rem;
-        padding: 1rem;
-        overflow-x: auto;
-        font-size: 0.8rem;
-        color: var(--text);
-      "
-    ><code>GET /v1/metrics?api-key=PROJECT_API_KEY</code></pre>
+    <pre><code>GET /v1/metrics?api-key=PROJECT_API_KEY</code></pre>
     <p style="color: var(--muted); font-size: 0.85rem; margin-top: 0.5rem">
       Replace <code>YOUR_API_KEY</code> with an API key from Settings. The
       response is standard Prometheus text format and includes only time series
