@@ -748,6 +748,111 @@
       return q;
     }
 
+    const activeRequests = new Map();
+
+    function fetchJSON(url, requestKey) {
+      let controller = null;
+      if (requestKey) {
+        const previous = activeRequests.get(requestKey);
+        if (previous) previous.abort();
+        controller = new AbortController();
+        activeRequests.set(requestKey, controller);
+      }
+
+      return fetch(url, controller ? { signal: controller.signal } : undefined)
+        .then((res) => {
+          if (!res.ok) {
+            throw new Error("request failed: " + res.status);
+          }
+          return res.json();
+        })
+        .finally(() => {
+          if (requestKey && activeRequests.get(requestKey) === controller) {
+            activeRequests.delete(requestKey);
+          }
+        });
+    }
+
+    function logAsyncError(label, err) {
+      if (err && err.name === "AbortError") return;
+      console.error(label, err);
+    }
+
+    function getSelectInt(el, fallback) {
+      const value = parseInt(el && el.value ? el.value : "", 10);
+      return Number.isFinite(value) && value > 0 ? value : fallback;
+    }
+
+    function replaceTableBody(tbody, rows) {
+      if (!tbody) return;
+      const fragment = document.createDocumentFragment();
+      rows.forEach((row) => fragment.appendChild(row));
+      tbody.replaceChildren(fragment);
+    }
+
+    function buildMessageRow(colspan, message, color) {
+      const tr = document.createElement("tr");
+      const td = document.createElement("td");
+      td.colSpan = colspan;
+      td.style.fontSize = "0.8rem";
+      td.style.color = color || "var(--muted)";
+      td.textContent = message;
+      tr.appendChild(td);
+      return tr;
+    }
+
+    function buildStatusBadge(status) {
+      const badge = document.createElement("span");
+      const statusClass =
+        status >= 500
+          ? "badge-danger"
+          : status >= 400
+            ? "badge-warning"
+            : "badge-primary";
+      badge.className = "badge " + statusClass;
+      badge.textContent = String(status);
+      return badge;
+    }
+
+    function buildMetricsEventRow(e) {
+      const tr = document.createElement("tr");
+      tr.setAttribute("data-event-id", e.id);
+      const timeStr = e.created_at
+        ? formatRealtimeTime(e.created_at)
+        : (e.time || "");
+
+      const timeTd = document.createElement("td");
+      timeTd.textContent = timeStr;
+
+      const methodTd = document.createElement("td");
+      const methodCode = document.createElement("code");
+      methodCode.textContent = e.method || "";
+      methodTd.appendChild(methodCode);
+
+      const routeTd = document.createElement("td");
+      routeTd.textContent = e.route || "/";
+
+      const statusTd = document.createElement("td");
+      statusTd.style.textAlign = "center";
+      statusTd.appendChild(buildStatusBadge(e.status != null ? e.status : 0));
+
+      const durationTd = document.createElement("td");
+      durationTd.style.textAlign = "right";
+      durationTd.textContent =
+        e.duration_ms != null ? e.duration_ms + " ms" : "–";
+
+      const projectTd = document.createElement("td");
+      projectTd.textContent = e.project || "–";
+
+      tr.appendChild(timeTd);
+      tr.appendChild(methodTd);
+      tr.appendChild(routeTd);
+      tr.appendChild(statusTd);
+      tr.appendChild(durationTd);
+      tr.appendChild(projectTd);
+      return tr;
+    }
+
     function sumTrafficSeries(data) {
       const series = data.series || [];
       return series.reduce((a, p) => a + (p.count || 0), 0);
@@ -775,32 +880,30 @@
       };
 
       Promise.all([
-        fetch(
+        fetchJSON(
           withFilters("/v1/metrics/avg-duration?hours=" + periodHours, {
             status: "",
           }),
+          "metrics-cards-avg",
         )
-          .then((r) =>
-            r.ok ? r.json() : Promise.reject(new Error("avg-duration failed")),
-          )
           .then((data) =>
             data && typeof data.avg_duration_ms === "number"
               ? data.avg_duration_ms
               : 0,
           ),
-        fetch(
+        fetchJSON(
           withFilters("/v1/metrics/traffic?hours=" + periodHours, {
             status: "",
           }),
+          "metrics-cards-total",
         )
-          .then((r) => r.json())
           .then(sumTrafficSeries),
-        fetch(
+        fetchJSON(
           withFilters("/v1/metrics/traffic?hours=" + periodHours, {
             status: "error",
           }),
+          "metrics-cards-error",
         )
-          .then((r) => r.json())
           .then(sumTrafficSeries),
       ])
         .then(([avgMs, totalCount, errorCount]) => {
@@ -817,7 +920,7 @@
             errorCount != null ? errorCount.toLocaleString() : "0",
           );
         })
-        .catch((err) => console.error("failed to load metrics cards", err));
+        .catch((err) => logAsyncError("failed to load metrics cards", err));
     }
 
     const canvas = document.getElementById("traffic-chart");
@@ -827,8 +930,10 @@
 
     function loadTrafficChart() {
       // Fetch time-series traffic data for the current user (optionally filtered by project).
-      fetch(withFilters("/v1/metrics/traffic?" + rangeParam()))
-        .then((res) => res.json())
+      fetchJSON(
+        withFilters("/v1/metrics/traffic?" + rangeParam()),
+        "traffic-chart",
+      )
         .then((data) => {
           const series = data.series || [];
           const labels = series.map((p) =>
@@ -886,7 +991,7 @@
           });
         })
         .catch((err) => {
-          console.error("failed to load demo metrics", err);
+          logAsyncError("failed to load demo metrics", err);
         });
     }
 
@@ -911,25 +1016,14 @@
       // Latency chart remains visible for all filters.
     }
 
-    function reloadAll() {
-      updateChartVisibility();
-      loadMetricsCards();
-      loadTrafficChart();
-      fetchTopRoutes();
-      fetchRealtimeEvents();
-      loadErrorRateChart();
-      loadLatencyChart();
-      fetchAttributeKeys();
-      fetchAttributeValueCounts();
-    }
-    if (filterStatusEl) filterStatusEl.addEventListener("change", reloadAll);
-
     const errorRateCanvas = document.getElementById("error-rate-chart");
     let errorRateChart = null;
     function loadErrorRateChart() {
       if (!errorRateCanvas) return;
-      fetch(withFilters("/v1/metrics/error-rate?" + rangeParam()))
-        .then((res) => res.json())
+      fetchJSON(
+        withFilters("/v1/metrics/error-rate?" + rangeParam()),
+        "error-rate-chart",
+      )
         .then((data) => {
           const series = data.series || [];
           const labels = series.map((p) => formatIsoBucketLabel(p.bucket));
@@ -973,15 +1067,17 @@
             },
           });
         })
-        .catch((err) => console.error("failed to load error rate", err));
+        .catch((err) => logAsyncError("failed to load error rate", err));
     }
 
     const latencyCanvas = document.getElementById("latency-chart");
     let latencyChart = null;
     function loadLatencyChart() {
       if (!latencyCanvas) return;
-      fetch(withFilters("/v1/metrics/latency-percentiles?" + rangeParam()))
-        .then((res) => res.json())
+      fetchJSON(
+        withFilters("/v1/metrics/latency-percentiles?" + rangeParam()),
+        "latency-chart",
+      )
         .then((data) => {
           const series = data.series || [];
           const labels = series.map((p) => formatIsoBucketLabel(p.bucket));
@@ -1043,7 +1139,7 @@
           });
         })
         .catch((err) =>
-          console.error("failed to load latency percentiles", err),
+          logAsyncError("failed to load latency percentiles", err),
         );
     }
 
@@ -1059,10 +1155,11 @@
     const topRoutesPrev = document.getElementById("top-routes-prev");
     const topRoutesNext = document.getElementById("top-routes-next");
     const topRoutesInfo = document.getElementById("top-routes-info");
+    const topRoutesTbody = document.querySelector("#top-routes-table tbody");
     let topRoutesOffset = 0;
 
     function fetchTopRoutes() {
-      const limit = topRoutesLimit ? parseInt(topRoutesLimit.value) : 10;
+      const limit = getSelectInt(topRoutesLimit, 10);
       const base =
         "/v1/metrics/top-routes?" +
         rangeParam() +
@@ -1070,15 +1167,17 @@
         limit +
         "&offset=" +
         topRoutesOffset;
-      fetch(withFilters(base))
-        .then((res) => res.json())
+      fetchJSON(withFilters(base), "top-routes")
         .then((data) => {
           const routes = data.routes || [];
-          const tbody = document.querySelector("#top-routes-table tbody");
-          if (!tbody) return;
+          if (!topRoutesTbody) return;
 
-          tbody.innerHTML = "";
-          routes.forEach((row) => {
+          if (routes.length === 0) {
+            replaceTableBody(topRoutesTbody, [
+              buildMessageRow(3, "No routes in this period."),
+            ]);
+          } else {
+            const rows = routes.map((row) => {
             const tr = document.createElement("tr");
             const routeTd = document.createElement("td");
             routeTd.textContent = row.route || "/";
@@ -1090,16 +1189,7 @@
               statuses.forEach((s, idx) => {
                 const status = s.status != null ? s.status : 0;
                 const count = s.count != null ? s.count : 0;
-                const statusClass =
-                  status >= 500
-                    ? "badge-danger"
-                    : status >= 400
-                      ? "badge-warning"
-                      : "badge-primary";
-                const badge = document.createElement("span");
-                badge.className = "badge " + statusClass;
-                badge.textContent = String(status);
-                statusTd.appendChild(badge);
+                statusTd.appendChild(buildStatusBadge(status));
                 const countSpan = document.createElement("span");
                 countSpan.style.color = "var(--muted)";
                 countSpan.textContent = " ×" + count;
@@ -1120,8 +1210,10 @@
             tr.appendChild(routeTd);
             tr.appendChild(statusTd);
             tr.appendChild(countTd);
-            tbody.appendChild(tr);
-          });
+            return tr;
+            });
+            replaceTableBody(topRoutesTbody, rows);
+          }
 
           const topRouteEl = document.getElementById("demo-top-route");
           if (topRouteEl && routes.length > 0) {
@@ -1143,7 +1235,7 @@
           }
         })
         .catch((err) => {
-          console.error("failed to load top routes", err);
+          logAsyncError("failed to load top routes", err);
         });
     }
 
@@ -1155,14 +1247,14 @@
     }
     if (topRoutesPrev) {
       topRoutesPrev.addEventListener("click", function () {
-        const limit = topRoutesLimit ? parseInt(topRoutesLimit.value) : 10;
+        const limit = getSelectInt(topRoutesLimit, 10);
         topRoutesOffset = Math.max(0, topRoutesOffset - limit);
         fetchTopRoutes();
       });
     }
     if (topRoutesNext) {
       topRoutesNext.addEventListener("click", function () {
-        const limit = topRoutesLimit ? parseInt(topRoutesLimit.value) : 10;
+        const limit = getSelectInt(topRoutesLimit, 10);
         topRoutesOffset += limit;
         fetchTopRoutes();
       });
@@ -1205,8 +1297,9 @@
       const counts = data.counts || [];
 
       if (counts.length === 0) {
-        attrBreakdownTbody.innerHTML =
-          '<tr><td colspan="2" style="color: var(--muted); font-size: 0.8rem">Select an attribute to see value counts.</td></tr>';
+        replaceTableBody(attrBreakdownTbody, [
+          buildMessageRow(2, "Select an attribute to see value counts."),
+        ]);
         return;
       }
       let rows = counts;
@@ -1220,8 +1313,7 @@
           .map(([value, count]) => ({ value, count }))
           .sort((a, b) => (b.count || 0) - (a.count || 0));
       }
-      attrBreakdownTbody.innerHTML = "";
-      rows.forEach((r) => {
+      const tableRows = rows.map((r) => {
         const tr = document.createElement("tr");
         const valueTd = document.createElement("td");
         valueTd.textContent = displayValue(r.value, stripPath);
@@ -1230,10 +1322,11 @@
         countTd.textContent = "×" + (r.count != null ? r.count.toLocaleString() : "0");
         tr.appendChild(valueTd);
         tr.appendChild(countTd);
-        attrBreakdownTbody.appendChild(tr);
+        return tr;
       });
+      replaceTableBody(attrBreakdownTbody, tableRows);
 
-      const limit = attrBreakdownLimit ? parseInt(attrBreakdownLimit.value) : 50;
+      const limit = getSelectInt(attrBreakdownLimit, 50);
       const currentPage = Math.floor(attrBreakdownOffset / limit) + 1;
       const totalPages = Math.ceil((data.total || 0) / limit);
       if (attrBreakdownInfo) {
@@ -1249,9 +1342,10 @@
     }
 
     function fetchAttributeKeys() {
-      try {
-        fetch(withFilters("/v1/metrics/attribute-keys?" + rangeParam()))
-          .then((res) => res.json())
+      fetchJSON(
+        withFilters("/v1/metrics/attribute-keys?" + rangeParam()),
+        "attribute-keys",
+      )
           .then((data) => {
             const keys = data.keys || [];
             keys.sort();
@@ -1260,8 +1354,15 @@
               { value: "route", label: "Route" },
               { value: "method", label: "Method" },
             ];
-            const options = keys.map((k) => ({ value: k, label: k }));
-            virtuals.forEach((v) => options.push({ value: v.value, label: v.label + " (system)" }));
+            const optionMap = new Map();
+            keys.forEach((k) => optionMap.set(k, { value: k, label: k }));
+            virtuals.forEach((v) =>
+              optionMap.set(v.value, {
+                value: v.value,
+                label: v.label + " (system)",
+              }),
+            );
+            const options = Array.from(optionMap.values());
 
             if (patternField) {
               const current = patternField.value;
@@ -1323,10 +1424,7 @@
               }
             }
           })
-          .catch((err) => console.error("failed to load attribute keys", err));
-        } catch (err) {
-          console.error("failed to load attribute keys", err);
-        }
+          .catch((err) => logAsyncError("failed to load attribute keys", err));
     }
 
     function fetchAttributeValueCounts() {
@@ -1336,18 +1434,17 @@
         renderAttrBreakdownTable();
         return;
       }
-      const limit = attrBreakdownLimit ? parseInt(attrBreakdownLimit.value) : 50;
+      const limit = getSelectInt(attrBreakdownLimit, 50);
       const url = withFilters(
         "/v1/metrics/attribute-value-counts?" + rangeParam() + "&key=" + encodeURIComponent(key) + "&limit=" + limit + "&offset=" + attrBreakdownOffset,
       );
-      fetch(url)
-        .then((res) => res.json())
+      fetchJSON(url, "attribute-value-counts")
         .then((data) => {
           attrBreakdownCounts = data;
           renderAttrBreakdownTable();
         })
         .catch((err) => {
-          console.error("failed to load attribute value counts", err);
+          logAsyncError("failed to load attribute value counts", err);
           attrBreakdownCounts = [];
           renderAttrBreakdownTable();
         });
@@ -1367,14 +1464,14 @@
     }
     if (attrBreakdownPrev) {
       attrBreakdownPrev.addEventListener("click", function () {
-        const limit = attrBreakdownLimit ? parseInt(attrBreakdownLimit.value) : 50;
+        const limit = getSelectInt(attrBreakdownLimit, 50);
         attrBreakdownOffset = Math.max(0, attrBreakdownOffset - limit);
         fetchAttributeValueCounts();
       });
     }
     if (attrBreakdownNext) {
       attrBreakdownNext.addEventListener("click", function () {
-        const limit = attrBreakdownLimit ? parseInt(attrBreakdownLimit.value) : 50;
+        const limit = getSelectInt(attrBreakdownLimit, 50);
         attrBreakdownOffset += limit;
         fetchAttributeValueCounts();
       });
@@ -1382,7 +1479,6 @@
     if (attrBreakdownStripPath) {
       attrBreakdownStripPath.addEventListener("change", renderAttrBreakdownTable);
     }
-    fetchAttributeKeys();
 
     // Pattern breakdown logic
     const patternField = document.getElementById("pattern-field");
@@ -1416,17 +1512,17 @@
         url += "&compare_by=" + encodeURIComponent(compareBy);
       }
 
-      fetch(url)
-        .then(res => res.json())
+      fetchJSON(url, "pattern-counts")
         .then(data => {
           const counts = data.counts || [];
           if (!patternTbody) return;
-          patternTbody.innerHTML = "";
           if (counts.length === 0) {
-            patternTbody.innerHTML = '<tr><td colspan="4" style="color: var(--muted); font-size: 0.8rem">No matches found.</td></tr>';
+            replaceTableBody(patternTbody, [
+              buildMessageRow(4, "No matches found."),
+            ]);
             return;
           }
-          counts.forEach(r => {
+          const rows = counts.map((r) => {
             const tr = document.createElement("tr");
             const valTd = document.createElement("td");
             valTd.textContent = r.value || "–";
@@ -1435,16 +1531,7 @@
             const statusTd = document.createElement("td");
             statusTd.style.textAlign = "center";
             if (r.status != null) {
-              const statusClass =
-                r.status >= 500
-                  ? "badge-danger"
-                  : r.status >= 400
-                    ? "badge-warning"
-                    : "badge-primary";
-              const badge = document.createElement("span");
-              badge.className = "badge " + statusClass;
-              badge.textContent = String(r.status);
-              statusTd.appendChild(badge);
+              statusTd.appendChild(buildStatusBadge(r.status));
             } else {
               statusTd.textContent = "–";
             }
@@ -1455,13 +1542,16 @@
             tr.appendChild(compareTd);
             tr.appendChild(statusTd);
             tr.appendChild(countTd);
-            patternTbody.appendChild(tr);
+            return tr;
           });
+          replaceTableBody(patternTbody, rows);
         })
         .catch(err => {
-          console.error("failed to load pattern counts", err);
+          logAsyncError("failed to load pattern counts", err);
           if (patternTbody) {
-            patternTbody.innerHTML = '<tr><td colspan="4" style="color: var(--muted); font-size: 0.8rem; color: var(--danger)">Error loading data.</td></tr>';
+            replaceTableBody(patternTbody, [
+              buildMessageRow(4, "Error loading data.", "var(--danger)"),
+            ]);
           }
         });
     }
@@ -1484,49 +1574,11 @@
 
     function renderRealtimeEvents(events) {
       if (!realtimeTbody) return;
-      realtimeTbody.innerHTML = "";
       if (!events || events.length === 0) {
-        const tr = document.createElement("tr");
-        tr.innerHTML =
-          '<td colspan="6" style="color: var(--muted); font-size: 0.8rem;">No events yet.</td>';
-        realtimeTbody.appendChild(tr);
+        replaceTableBody(realtimeTbody, [buildMessageRow(6, "No events yet.")]);
         return;
       }
-      events.forEach((e) => {
-        const tr = document.createElement("tr");
-        tr.setAttribute("data-event-id", e.id);
-        const statusClass =
-          e.status >= 500
-            ? "badge-danger"
-            : e.status >= 400
-              ? "badge-warning"
-              : "badge-primary";
-        const timeStr = e.created_at
-          ? formatRealtimeTime(e.created_at)
-          : (e.time || "");
-        tr.innerHTML =
-          "<td>" +
-          timeStr +
-          "</td>" +
-          "<td><code>" +
-          (e.method || "") +
-          "</code></td>" +
-          "<td>" +
-          (e.route || "/") +
-          "</td>" +
-          '<td style="text-align:center;"><span class="badge ' +
-          statusClass +
-          '">' +
-          e.status +
-          "</span></td>" +
-          '<td style="text-align:right;">' +
-          (e.duration_ms != null ? e.duration_ms + " ms" : "–") +
-          "</td>" +
-          "<td>" +
-          (e.project || "–") +
-          "</td>";
-        realtimeTbody.appendChild(tr);
-      });
+      replaceTableBody(realtimeTbody, events.map(buildMetricsEventRow));
     }
 
     const realtimeLimit = document.getElementById("realtime-limit");
@@ -1542,16 +1594,19 @@
       "event-detail-attributes-table",
     );
     const eventDetailClose = document.getElementById("event-detail-close");
+    const eventDetailAttributesTbody = eventDetailAttributesTable
+      ? eventDetailAttributesTable.querySelector("tbody")
+      : null;
     let realtimeOffset = 0;
 
     function fetchRealtimeEvents() {
-      const limit = realtimeLimit ? parseInt(realtimeLimit.value) : 10;
-      fetch(
+      const limit = getSelectInt(realtimeLimit, 10);
+      fetchJSON(
         withFilters(
           "/v1/metrics/recent?limit=" + limit + "&offset=" + realtimeOffset,
         ),
+        "realtime-events",
       )
-        .then((res) => res.json())
         .then((data) => {
           renderRealtimeEvents(data.events || []);
 
@@ -1571,7 +1626,7 @@
           }
         })
         .catch((err) => {
-          console.error("failed to load recent events", err);
+          logAsyncError("failed to load recent events", err);
         });
     }
 
@@ -1593,7 +1648,7 @@
 
     if (realtimePrev) {
       realtimePrev.addEventListener("click", function () {
-        const limit = realtimeLimit ? parseInt(realtimeLimit.value) : 10;
+        const limit = getSelectInt(realtimeLimit, 10);
         realtimeOffset = Math.max(0, realtimeOffset - limit);
         fetchRealtimeEvents();
         // Stop streaming when manually paginating.
@@ -1607,7 +1662,7 @@
 
     if (realtimeNext) {
       realtimeNext.addEventListener("click", function () {
-        const limit = realtimeLimit ? parseInt(realtimeLimit.value) : 10;
+        const limit = getSelectInt(realtimeLimit, 10);
         realtimeOffset += limit;
         fetchRealtimeEvents();
         // Stop streaming when manually paginating.
@@ -1619,47 +1674,43 @@
       });
     }
 
-    streamToggle.addEventListener("click", function () {
-      if (streamInterval) {
-        clearInterval(streamInterval);
-        streamInterval = null;
-        if (streamIcon) streamIcon.classList.remove("stream-icon-spin");
-        // Re-enable pagination buttons.
-        if (realtimePrev) realtimePrev.disabled = realtimeOffset === 0;
-        if (realtimeNext) {
-          // Re-check has_more on next fetch
+    if (streamToggle) {
+      streamToggle.addEventListener("click", function () {
+        if (streamInterval) {
+          clearInterval(streamInterval);
+          streamInterval = null;
+          if (streamIcon) streamIcon.classList.remove("stream-icon-spin");
+          // Re-enable pagination buttons.
+          if (realtimePrev) realtimePrev.disabled = realtimeOffset === 0;
+          if (realtimeNext) {
+            // Re-check has_more on next fetch
+            fetchRealtimeEvents();
+          }
+        } else {
+          // Reset to page 1 when starting stream.
+          realtimeOffset = 0;
+          if (streamIcon) streamIcon.classList.add("stream-icon-spin");
+          // Disable pagination buttons when streaming.
+          if (realtimePrev) realtimePrev.disabled = true;
+          if (realtimeNext) realtimeNext.disabled = true;
           fetchRealtimeEvents();
+          streamInterval = setInterval(fetchRealtimeEvents, 2000);
         }
-      } else {
-        // Reset to page 1 when starting stream.
-        realtimeOffset = 0;
-        if (streamIcon) streamIcon.classList.add("stream-icon-spin");
-        // Disable pagination buttons when streaming.
-        if (realtimePrev) realtimePrev.disabled = true;
-        if (realtimeNext) realtimeNext.disabled = true;
-        fetchRealtimeEvents();
-        streamInterval = setInterval(fetchRealtimeEvents, 2000);
-      }
-    });
+      });
+    }
 
     function openEventDetail(id) {
       if (!eventDetailOverlay) return;
       eventDetailOverlay.style.display = "flex";
       eventDetailMain.innerHTML =
         '<div style="color: var(--muted); font-size: 0.8rem;">Loading…</div>';
-      if (eventDetailAttributesTable) {
-        const tbody = eventDetailAttributesTable.querySelector("tbody");
-        if (tbody) {
-          tbody.innerHTML =
-            '<tr><td colspan="2" style="color: var(--muted); font-size: 0.8rem;">Loading…</td></tr>';
-        }
+      if (eventDetailAttributesTbody) {
+        replaceTableBody(eventDetailAttributesTbody, [
+          buildMessageRow(2, "Loading…"),
+        ]);
       }
 
-      fetch("/v1/metrics/event/" + id)
-        .then((res) => {
-          if (!res.ok) throw new Error("failed to load event");
-          return res.json();
-        })
+      fetchJSON("/v1/metrics/event/" + id, "event-detail")
         .then((data) => {
           const when =
             data.created_at_display ||
@@ -1697,32 +1748,34 @@
               "</div>";
           }
 
-          if (eventDetailAttributesTable) {
-            const tbody = eventDetailAttributesTable.querySelector("tbody");
-            if (!tbody) return;
+          if (eventDetailAttributesTbody) {
             const attrs = data.attributes || {};
             const keys = Object.keys(attrs);
             if (keys.length === 0) {
-              tbody.innerHTML =
-                '<tr><td colspan="2" style="color: var(--muted); font-size: 0.8rem;">No attributes.</td></tr>';
+              replaceTableBody(eventDetailAttributesTbody, [
+                buildMessageRow(2, "No attributes."),
+              ]);
               return;
             }
-            tbody.innerHTML = "";
-            keys.sort().forEach((k) => {
+            const rows = keys.sort().map((k) => {
               const v = attrs[k];
               const tr = document.createElement("tr");
-              tr.innerHTML =
-                "<td>" +
-                k +
-                "</td><td><code>" +
-                (typeof v === "object" ? JSON.stringify(v) : String(v)) +
-                "</code></td>";
-              tbody.appendChild(tr);
+              const keyTd = document.createElement("td");
+              keyTd.textContent = k;
+              const valueTd = document.createElement("td");
+              const code = document.createElement("code");
+              code.textContent =
+                typeof v === "object" ? JSON.stringify(v) : String(v);
+              valueTd.appendChild(code);
+              tr.appendChild(keyTd);
+              tr.appendChild(valueTd);
+              return tr;
             });
+            replaceTableBody(eventDetailAttributesTbody, rows);
           }
         })
         .catch((err) => {
-          console.error(err);
+          logAsyncError("failed to load event details", err);
           if (eventDetailMain) {
             eventDetailMain.innerHTML =
               '<div style="color: var(--muted); font-size: 0.8rem;">Failed to load event details.</div>';
@@ -1760,9 +1813,11 @@
     let allEventsOffset = 0;
 
     function fetchAllEvents() {
-      const limit = allEventsLimit ? parseInt(allEventsLimit.value) : 50;
-      fetch(withFilters("/v1/metrics/all-events?limit=" + limit + "&offset=" + allEventsOffset))
-        .then((res) => res.json())
+      const limit = getSelectInt(allEventsLimit, 50);
+      fetchJSON(
+        withFilters("/v1/metrics/all-events?limit=" + limit + "&offset=" + allEventsOffset),
+        "all-events",
+      )
         .then((data) => {
           renderAllEvents(data.events || []);
 
@@ -1779,27 +1834,19 @@
           }
         })
         .catch((err) => {
-          console.error("failed to load all events", err);
+          logAsyncError("failed to load all events", err);
         });
     }
 
     function renderAllEvents(events) {
       if (!allEventsTbody) return;
-      allEventsTbody.innerHTML = "";
       if (!events || events.length === 0) {
-        const tr = document.createElement("tr");
-        tr.innerHTML = '<td colspan="6" style="color: var(--muted); font-size: 0.8rem;">No events in this period.</td>';
-        allEventsTbody.appendChild(tr);
+        replaceTableBody(allEventsTbody, [
+          buildMessageRow(6, "No events in this period."),
+        ]);
         return;
       }
-      events.forEach((e) => {
-        const tr = document.createElement("tr");
-        tr.setAttribute("data-event-id", e.id);
-        const statusClass = e.status >= 500 ? "badge-danger" : e.status >= 400 ? "badge-warning" : "badge-primary";
-        const timeStr = e.created_at ? formatRealtimeTime(e.created_at) : (e.time || "");
-        tr.innerHTML = "<td>" + timeStr + "</td>" + "<td><code>" + (e.method || "") + "</code></td>" + "<td>" + (e.route || "/") + "</td>" + '<td style="text-align:center;"><span class="badge ' + statusClass + '">' + e.status + "</span></td>" + '<td style="text-align:right;">' + (e.duration_ms != null ? e.duration_ms + " ms" : "–") + "</td>" + "<td>" + (e.project || "–") + "</td>";
-        allEventsTbody.appendChild(tr);
-      });
+      replaceTableBody(allEventsTbody, events.map(buildMetricsEventRow));
     }
 
     if (allEventsLimit) {
@@ -1810,14 +1857,14 @@
     }
     if (allEventsPrev) {
       allEventsPrev.addEventListener("click", function () {
-        const limit = allEventsLimit ? parseInt(allEventsLimit.value) : 50;
+        const limit = getSelectInt(allEventsLimit, 50);
         allEventsOffset = Math.max(0, allEventsOffset - limit);
         fetchAllEvents();
       });
     }
     if (allEventsNext) {
       allEventsNext.addEventListener("click", function () {
-        const limit = allEventsLimit ? parseInt(allEventsLimit.value) : 50;
+        const limit = getSelectInt(allEventsLimit, 50);
         allEventsOffset += limit;
         fetchAllEvents();
       });
@@ -1847,8 +1894,8 @@
       fetchAttributeValueCounts();
       fetchAllEvents();
       fetchSearchResults();
-      fetchAttributeKeys();
     }
+    if (filterStatusEl) filterStatusEl.addEventListener("change", reloadAll);
 
     // Search events
     const searchField = document.getElementById("search-field");
@@ -1861,6 +1908,8 @@
     const searchResultsNext = document.getElementById("search-results-next");
     let searchOffset = 0;
 
+    fetchAttributeKeys();
+
     function fetchSearchResults() {
         const field = searchField ? searchField.value : 'route';
         const type = searchType ? searchType.value : 'includes';
@@ -1868,13 +1917,17 @@
 
         if (!pattern) {
             if (searchResultsTbody) {
-                searchResultsTbody.innerHTML = '<tr><td colspan="7" style="color: var(--muted); font-size: 0.8rem">Enter a search query to see results.</td></tr>';
+                replaceTableBody(searchResultsTbody, [
+                  buildMessageRow(7, "Enter a search query to see results."),
+                ]);
             }
             return;
         }
 
         if (searchResultsTbody) {
-            searchResultsTbody.innerHTML = '<tr><td colspan="7" style="color: var(--muted); font-size: 0.8rem">Searching...</td></tr>';
+            replaceTableBody(searchResultsTbody, [
+              buildMessageRow(7, "Searching..."),
+            ]);
         }
 
         const limit = 50;
@@ -1884,8 +1937,7 @@
             "&pattern=" + encodeURIComponent(pattern) +
             "&limit=" + limit + "&offset=" + searchOffset);
 
-        fetch(url)
-            .then(res => res.json())
+        fetchJSON(url, "search-events")
             .then(data => {
                 renderSearchResults(data.events || []);
 
@@ -1902,16 +1954,17 @@
                 }
             })
             .catch(err => {
-                console.error("failed to load search results", err);
+                logAsyncError("failed to load search results", err);
                 if (searchResultsTbody) {
-                    searchResultsTbody.innerHTML = '<tr><td colspan="7" style="color: var(--muted); font-size: 0.8rem; color: var(--danger)">Error loading data.</td></tr>';
+                    replaceTableBody(searchResultsTbody, [
+                      buildMessageRow(7, "Error loading data.", "var(--danger)"),
+                    ]);
                 }
             });
     }
 
     function renderSearchResults(events) {
         if (!searchResultsTbody) return;
-        searchResultsTbody.innerHTML = "";
 
         const field = searchField ? searchField.value : 'route';
         const header = document.querySelector("#search-results-table th:nth-child(2)");
@@ -1921,15 +1974,14 @@
         }
 
         if (!events || events.length === 0) {
-            const tr = document.createElement("tr");
-            tr.innerHTML = '<td colspan="7" style="color: var(--muted); font-size: 0.8rem;">No events found.</td>';
-            searchResultsTbody.appendChild(tr);
+            replaceTableBody(searchResultsTbody, [
+              buildMessageRow(7, "No events found."),
+            ]);
             return;
         }
-        events.forEach((e) => {
+        const rows = events.map((e) => {
             const tr = document.createElement("tr");
             tr.setAttribute("data-event-id", e.id);
-            const statusClass = e.status >= 500 ? "badge-danger" : e.status >= 400 ? "badge-warning" : "badge-primary";
             const timeStr = e.created_at ? formatRealtimeTime(e.created_at) : (e.time || "");
 
             let attrValue = '';
@@ -1941,15 +1993,35 @@
                 attrValue = e.attributes[field] || '';
             }
 
-            tr.innerHTML = "<td>" + (e.route || "/") + "</td>" +
-                "<td>" + attrValue + "</td>" +
-                "<td>" + timeStr + "</td>" +
-                "<td><code>" + (e.method || "") + "</code></td>" +
-                '<td style="text-align:center;"><span class="badge ' + statusClass + '">' + e.status + "</span></td>" +
-                '<td style="text-align:right;">' + (e.duration_ms != null ? e.duration_ms + " ms" : "–") + "</td>" +
-                "<td>" + (e.project || "–") + "</td>";
-            searchResultsTbody.appendChild(tr);
+            const routeTd = document.createElement("td");
+            routeTd.textContent = e.route || "/";
+            const attrTd = document.createElement("td");
+            attrTd.textContent = attrValue;
+            const timeTd = document.createElement("td");
+            timeTd.textContent = timeStr;
+            const methodTd = document.createElement("td");
+            const methodCode = document.createElement("code");
+            methodCode.textContent = e.method || "";
+            methodTd.appendChild(methodCode);
+            const statusTd = document.createElement("td");
+            statusTd.style.textAlign = "center";
+            statusTd.appendChild(buildStatusBadge(e.status != null ? e.status : 0));
+            const durationTd = document.createElement("td");
+            durationTd.style.textAlign = "right";
+            durationTd.textContent =
+              e.duration_ms != null ? e.duration_ms + " ms" : "–";
+            const projectTd = document.createElement("td");
+            projectTd.textContent = e.project || "–";
+            tr.appendChild(routeTd);
+            tr.appendChild(attrTd);
+            tr.appendChild(timeTd);
+            tr.appendChild(methodTd);
+            tr.appendChild(statusTd);
+            tr.appendChild(durationTd);
+            tr.appendChild(projectTd);
+            return tr;
         });
+        replaceTableBody(searchResultsTbody, rows);
     }
 
     if (searchBtn) {
