@@ -3,12 +3,19 @@ package middleware
 import (
 	"bytes"
 	"encoding/json"
+	"log"
 	"net/http"
+	"sync/atomic"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
 
 	"apiinsight/internal/config"
+)
+
+const (
+	internalReportingQueueSize = 1024
+	internalReportingWorkers   = 2
 )
 
 // InternalReporting reports metrics about this API Insight instance to itself.
@@ -18,6 +25,33 @@ func InternalReporting(cfg *config.Config, ingestURL string) fiber.Handler {
 		return func(c *fiber.Ctx) error {
 			return c.Next()
 		}
+	}
+
+	type reportJob struct {
+		body []byte
+	}
+
+	queue := make(chan reportJob, internalReportingQueueSize)
+	client := &http.Client{Timeout: 2 * time.Second}
+	var dropped uint64
+
+	for range internalReportingWorkers {
+		go func() {
+			for job := range queue {
+				req, err := http.NewRequest(http.MethodPost, ingestURL, bytes.NewReader(job.body))
+				if err != nil {
+					log.Printf("internal reporting request build failed: %v", err)
+					continue
+				}
+				req.Header.Set("Content-Type", "application/json")
+				req.Header.Set("Authorization", "Bearer "+cfg.InternalAPIKey)
+				resp, err := client.Do(req)
+				if err != nil {
+					continue
+				}
+				_ = resp.Body.Close()
+			}
+		}()
 	}
 
 	return func(c *fiber.Ctx) error {
@@ -33,29 +67,34 @@ func InternalReporting(cfg *config.Config, ingestURL string) fiber.Handler {
 		status := c.Response().StatusCode()
 		method := string(c.Method())
 		remoteAddr := c.IP()
+		event := map[string]any{
+			"timestamp":   time.Now().UTC(),
+			"path":        path,
+			"method":      method,
+			"status":      status,
+			"duration_ms": duration.Milliseconds(),
+			"remote_ip":   remoteAddr,
+			"attributes": map[string]any{
+				"env": "internal",
+			},
+		}
+		payload := map[string]any{
+			"events": []any{event},
+		}
+		body, marshalErr := json.Marshal(payload)
+		if marshalErr != nil {
+			log.Printf("internal reporting marshal failed: %v", marshalErr)
+			return err
+		}
 
-		go func() {
-			event := map[string]interface{}{
-					"timestamp":   time.Now(),
-					"path":        path,
-					"method":      method,
-					"status":      status,
-					"duration_ms": duration.Milliseconds(),
-					"remote_ip":   remoteAddr,
-					"attributes": map[string]interface{}{
-						"env": "internal",
-					},
-				}
-			payload := map[string]interface{}{
-					"events": []interface{}{event},
-				}
-			body, _ := json.Marshal(payload)
-			req, _ := http.NewRequest("POST", ingestURL, bytes.NewReader(body))
-			req.Header.Set("Content-Type", "application/json")
-			req.Header.Set("Authorization", "Bearer "+cfg.InternalAPIKey)
-			client := &http.Client{Timeout: 2 * time.Second}
-			_, _ = client.Do(req)
-		}()
+		select {
+		case queue <- reportJob{body: body}:
+		default:
+			dropCount := atomic.AddUint64(&dropped, 1)
+			if dropCount == 1 || dropCount%100 == 0 {
+				log.Printf("internal reporting queue full, dropped %d events", dropCount)
+			}
+		}
 
 		return err
 	}

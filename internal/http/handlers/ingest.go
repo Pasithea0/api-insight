@@ -20,6 +20,8 @@ var (
 	requestDurationBuckets *prometheus.HistogramVec
 )
 
+const maxIngestEventsPerRequest = 5000
+
 func InitPrometheusMetrics() {
 	requestsTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
@@ -65,6 +67,10 @@ func IngestHandler(db *gorm.DB, cfg *config.Config) fiber.Handler {
 		if len(payload.Events) == 0 {
 			return ctx.Status(fiber.StatusBadRequest).SendString("no events provided")
 		}
+		if len(payload.Events) > maxIngestEventsPerRequest {
+			return ctx.Status(fiber.StatusRequestEntityTooLarge).
+				SendString("too many events in a single request")
+		}
 
 		now := time.Now()
 		retentionDays := cfg.RetentionDays
@@ -77,6 +83,9 @@ func IngestHandler(db *gorm.DB, cfg *config.Config) fiber.Handler {
 			ownerUserID = strconv.Itoa(int(ak.UserID))
 			project = ak.Name
 		}
+		if ownerUserID == "" {
+			return ctx.Status(fiber.StatusUnauthorized).SendString("missing authenticated API key")
+		}
 
 		records := make([]dbpkg.Event, 0, len(payload.Events))
 
@@ -88,6 +97,17 @@ func IngestHandler(db *gorm.DB, cfg *config.Config) fiber.Handler {
 			createdAt := now
 			if ev.Timestamp != nil {
 				createdAt = *ev.Timestamp
+			}
+			createdAt = createdAt.UTC()
+
+			status := ev.Status
+			if status < 0 {
+				status = 0
+			}
+
+			durationMs := ev.DurationMs
+			if durationMs < 0 {
+				durationMs = 0
 			}
 
 			attrs := datatypes.JSONMap{}
@@ -108,17 +128,17 @@ func IngestHandler(db *gorm.DB, cfg *config.Config) fiber.Handler {
 				Project:    project,
 				Route:      ev.Path,
 				Method:     ev.Method,
-				Status:     ev.Status,
-				DurationMs: ev.DurationMs,
+				Status:     status,
+				DurationMs: durationMs,
 				RemoteIP:   ev.RemoteIP,
 				Attributes: attrs,
 			}
 			records = append(records, rec)
 
-			labels := []string{project, ev.Path, ev.Method, strconv.Itoa(ev.Status)}
+			labels := []string{project, ev.Path, ev.Method, strconv.Itoa(status)}
 			requestsTotal.WithLabelValues(labels...).Inc()
 			requestDurationBuckets.WithLabelValues(project, ev.Path, ev.Method).
-				Observe(float64(ev.DurationMs) / 1000.0)
+				Observe(float64(durationMs) / 1000.0)
 		}
 
 		if len(records) == 0 {
