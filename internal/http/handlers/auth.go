@@ -10,8 +10,11 @@ import (
 
 	"apiinsight/internal/config"
 	dbpkg "apiinsight/internal/db"
+	httpsession "apiinsight/internal/http/session"
 	ui "apiinsight/web"
 )
+
+const sessionTTL = 7 * 24 * time.Hour
 
 func LoginForm(_ *config.Config) fiber.Handler {
 	return func(ctx *fiber.Ctx) error {
@@ -28,7 +31,7 @@ func LoginForm(_ *config.Config) fiber.Handler {
 	}
 }
 
-func LoginSubmit(db *gorm.DB) fiber.Handler {
+func LoginSubmit(db *gorm.DB, cfg *config.Config) fiber.Handler {
 	return func(ctx *fiber.Ctx) error {
 		username := ctx.FormValue("username")
 		password := ctx.FormValue("password")
@@ -45,12 +48,7 @@ func LoginSubmit(db *gorm.DB) fiber.Handler {
 			return renderLoginError(ctx, "Invalid username or password.")
 		}
 
-		ctx.Cookie(&fiber.Cookie{
-			Name:     "session_user",
-			Value:    username,
-			Path:     "/",
-			HTTPOnly: true,
-		})
+		issueSessionCookie(ctx, user.Username, cfg)
 
 		return ctx.Redirect("/", fiber.StatusSeeOther)
 	}
@@ -71,12 +69,7 @@ func renderLoginError(ctx *fiber.Ctx, errMsg string) error {
 
 func Logout() fiber.Handler {
 	return func(ctx *fiber.Ctx) error {
-		ctx.Cookie(&fiber.Cookie{
-			Name:    "session_user",
-			Value:   "",
-			Path:    "/",
-			Expires: time.Now().Add(-24 * time.Hour),
-		})
+		clearSessionCookie(ctx)
 		return ctx.Redirect("/login", fiber.StatusSeeOther)
 	}
 }
@@ -113,4 +106,29 @@ func ChangePasswordSelf(db *gorm.DB, cfg *config.Config) fiber.Handler {
 
 		return ctx.Redirect("/settings", fiber.StatusSeeOther)
 	}
+}
+
+func issueSessionCookie(ctx *fiber.Ctx, username string, cfg *config.Config) {
+	now := time.Now().UTC()
+	ctx.Cookie(&fiber.Cookie{
+		Name:     httpsession.CookieName,
+		Value:    httpsession.Sign(username, now, sessionTTL, cfg.SessionSecret),
+		Path:     "/",
+		HTTPOnly: true,
+		SameSite: "Lax",
+		Secure:   ctx.Protocol() == "https",
+		Expires:  now.Add(sessionTTL),
+	})
+}
+
+func clearSessionCookie(ctx *fiber.Ctx) {
+	ctx.Cookie(&fiber.Cookie{
+		Name:     httpsession.CookieName,
+		Value:    "",
+		Path:     "/",
+		HTTPOnly: true,
+		SameSite: "Lax",
+		Secure:   ctx.Protocol() == "https",
+		Expires:  time.Now().Add(-24 * time.Hour),
+	})
 }

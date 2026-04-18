@@ -11,8 +11,16 @@ import (
 	dbpkg "apiinsight/internal/db"
 )
 
-func CreateUser(db *gorm.DB) fiber.Handler {
+func CreateUser(db *gorm.DB, cfg *config.Config) fiber.Handler {
 	return func(ctx *fiber.Ctx) error {
+		currentUser, ok := MustUser(ctx)
+		if !ok {
+			return nil
+		}
+		if !currentUser.IsAdmin && currentUser.Username != cfg.AdminUser {
+			return ctx.Status(fiber.StatusForbidden).SendString("forbidden")
+		}
+
 		username := ctx.FormValue("username")
 		password := ctx.FormValue("password")
 		isAdminStr := ctx.FormValue("is_admin")
@@ -44,6 +52,14 @@ func CreateUser(db *gorm.DB) fiber.Handler {
 
 func ResetPassword(db *gorm.DB, cfg *config.Config) fiber.Handler {
 	return func(ctx *fiber.Ctx) error {
+		currentUser, ok := MustUser(ctx)
+		if !ok {
+			return nil
+		}
+		if !currentUser.IsAdmin && currentUser.Username != cfg.AdminUser {
+			return ctx.Status(fiber.StatusForbidden).SendString("forbidden")
+		}
+
 		idStr := ctx.Params("id")
 		if idStr == "" {
 			return ctx.Status(fiber.StatusBadRequest).SendString("invalid user ID")
@@ -56,10 +72,6 @@ func ResetPassword(db *gorm.DB, cfg *config.Config) fiber.Handler {
 		var user dbpkg.User
 		if err := db.First(&user, id).Error; err != nil {
 			return ctx.Status(fiber.StatusNotFound).SendString("user not found")
-		}
-
-		if user.Username == cfg.AdminUser {
-			return ctx.Status(fiber.StatusForbidden).SendString("cannot modify bootstrap admin user")
 		}
 
 		password := ctx.FormValue("password")
@@ -82,6 +94,14 @@ func ResetPassword(db *gorm.DB, cfg *config.Config) fiber.Handler {
 
 func DeleteUser(db *gorm.DB, cfg *config.Config) fiber.Handler {
 	return func(ctx *fiber.Ctx) error {
+		currentUser, ok := MustUser(ctx)
+		if !ok {
+			return nil
+		}
+		if !currentUser.IsAdmin && currentUser.Username != cfg.AdminUser {
+			return ctx.Status(fiber.StatusForbidden).SendString("forbidden")
+		}
+
 		idStr := ctx.Params("id")
 		if idStr == "" {
 			return ctx.Status(fiber.StatusBadRequest).SendString("invalid user ID")

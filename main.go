@@ -60,19 +60,20 @@ func main() {
 	}))
 
 	app.Get("/login", handlers.LoginForm(cfg))
-	app.Post("/login", handlers.LoginSubmit(sqlDB))
+	app.Post("/login", handlers.LoginSubmit(sqlDB, cfg))
 	app.Post("/logout", handlers.Logout())
 
 	adminAuth := appmw.AdminAuth(sqlDB, cfg)
+	requireAdmin := appmw.RequireAdmin(cfg)
 	app.Get("/", adminAuth(handlers.Dashboard(sqlDB, cfg)))
 	app.Get("/metrics", adminAuth(handlers.MetricsPage(sqlDB, cfg)))
 	app.Get("/docs", adminAuth(handlers.DocsPage(sqlDB, cfg)))
 	app.Get("/settings", adminAuth(handlers.SettingsPage(sqlDB, cfg)))
 	app.Get("/users", adminAuth(handlers.UsersPage(sqlDB, cfg)))
 
-	app.Post("/admin/users/create", adminAuth(handlers.CreateUser(sqlDB)))
-	app.Post("/admin/users/:id/reset-password", adminAuth(handlers.ResetPassword(sqlDB, cfg)))
-	app.Post("/admin/users/:id/delete", adminAuth(handlers.DeleteUser(sqlDB, cfg)))
+	app.Post("/admin/users/create", adminAuth(requireAdmin(handlers.CreateUser(sqlDB, cfg))))
+	app.Post("/admin/users/:id/reset-password", adminAuth(requireAdmin(handlers.ResetPassword(sqlDB, cfg))))
+	app.Post("/admin/users/:id/delete", adminAuth(requireAdmin(handlers.DeleteUser(sqlDB, cfg))))
 
 	app.Post("/settings/password", adminAuth(handlers.ChangePasswordSelf(sqlDB, cfg)))
 	app.Post("/settings/display", adminAuth(handlers.UpdateDisplaySettings(sqlDB, cfg)))
@@ -81,9 +82,9 @@ func main() {
 	app.Post("/admin/apikeys/delete", adminAuth(handlers.DeleteAPIKey(sqlDB, cfg)))
 	app.Post("/admin/apikeys/set-active", adminAuth(handlers.SetActiveAPIKey(sqlDB, cfg)))
 
-	app.Get("/admin/healthz", adminAuth(func(c *fiber.Ctx) error {
+	app.Get("/admin/healthz", adminAuth(requireAdmin(func(c *fiber.Ctx) error {
 		return c.SendString("admin ok")
-	}))
+	})))
 
 	app.Get("/v1/metrics", handlers.ProjectMetricsHandler(sqlDB))
 	app.Post("/v1/events", appmw.BearerAuth(sqlDB)(handlers.IngestHandler(sqlDB, cfg)))

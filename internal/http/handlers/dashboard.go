@@ -153,20 +153,9 @@ func SettingsPage(db *gorm.DB, cfg *config.Config) fiber.Handler {
 			}
 			if !hasInternal {
 				var keyRow dbpkg.APIKey
-				if err := db.Where("key = ?", cfg.InternalAPIKey).First(&keyRow).Error; err != nil {
-					keyRow = dbpkg.APIKey{
-						UserID:      user.ID,
-						Name:        "api-insight",
-						Environment: "internal",
-						Key:         cfg.InternalAPIKey,
-						Active:      true,
-					}
-					db.Create(&keyRow)
-				} else if keyRow.UserID != user.ID {
-					keyRow.UserID = user.ID
-					db.Save(&keyRow)
+				if err := db.Where("key = ? AND user_id = ?", cfg.InternalAPIKey, user.ID).First(&keyRow).Error; err == nil {
+					apiKeys = append([]dbpkg.APIKey{keyRow}, apiKeys...)
 				}
-				apiKeys = append([]dbpkg.APIKey{keyRow}, apiKeys...)
 			}
 		}
 

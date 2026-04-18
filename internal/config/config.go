@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"strconv"
+	"strings"
 )
 
 // Config holds the core runtime configuration for the service.
@@ -24,6 +25,9 @@ type Config struct {
 	// InternalAPIKey is used for self-reporting metrics from this API Insight instance.
 	// If empty, internal reporting is disabled.
 	InternalAPIKey string
+
+	// SessionSecret signs dashboard session cookies.
+	SessionSecret string
 }
 
 // Load reads configuration from environment variables and applies
@@ -40,6 +44,15 @@ func Load() *Config {
 	if v := os.Getenv("APP_RETENTION_DAYS"); v != "" {
 		if days, err := strconv.Atoi(v); err == nil && days > 0 {
 			cfg.RetentionDays = days
+		}
+	}
+	cfg.SessionSecret = strings.TrimSpace(os.Getenv("APP_SESSION_SECRET"))
+	if cfg.SessionSecret == "" {
+		// Keep existing installs working, but prefer APP_SESSION_SECRET in production.
+		if cfg.InternalAPIKey != "" {
+			cfg.SessionSecret = cfg.InternalAPIKey
+		} else {
+			cfg.SessionSecret = cfg.AdminPassword
 		}
 	}
 
