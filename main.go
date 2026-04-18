@@ -86,7 +86,6 @@ func main() {
 		return c.SendString("admin ok")
 	})))
 
-	app.Get("/v1/metrics", handlers.ProjectMetricsHandler(sqlDB))
 	app.Post("/v1/events", appmw.BearerAuth(sqlDB)(handlers.IngestHandler(sqlDB, cfg)))
 
 	app.Get("/v1/metrics/traffic", adminAuth(metrics.TrafficSeries(sqlDB)))

@@ -1,7 +1,7 @@
 {{define "docs"}}
 <div class="page-title">Docs</div>
 <div class="page-subtitle">
-  How to send events to API Insight and scrape Prometheus metrics.
+  How to send events to API Insight.
 </div>
 
 <div class="panel">
@@ -49,26 +49,4 @@
   </div>
 </div>
 
-<div class="panel" style="margin-top: 1rem">
-  <div class="panel-header">
-    <div>
-      <div class="panel-title">Prometheus metrics</div>
-      <div class="panel-subtitle">
-        Project-scoped scrape endpoint using an API key.
-      </div>
-    </div>
-  </div>
-  <div class="main-body" style="padding: 0 1rem 1rem">
-    <p style="color: var(--muted); font-size: 0.9rem; margin-bottom: 0.75rem">
-      To access plaintext Prometheus metrics externally, use:
-    </p>
-    <pre><code>GET /v1/metrics?api-key=PROJECT_API_KEY</code></pre>
-    <p style="color: var(--muted); font-size: 0.85rem; margin-top: 0.5rem">
-      Replace <code>YOUR_API_KEY</code> with an API key from Settings. The
-      response is standard Prometheus text format and includes only time series
-      whose <code>project</code> label matches the key’s project name. Use this
-      URL as a Prometheus scrape target (e.g. in <code>prometheus.yml</code>).
-    </p>
-  </div>
-</div>
 {{end}}
