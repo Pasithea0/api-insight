@@ -24,6 +24,12 @@ type APIKey struct {
 	// Key is the actual bearer token value (stored as-is, should be unique).
 	Key string `gorm:"uniqueIndex;size:255;not null"`
 
+	// PublicKey is a separate token that can be used for read-only public APIs.
+	PublicKey string `gorm:"size:255"`
+
+	// PublicEnabled controls whether public API access is allowed for this project.
+	PublicEnabled bool `gorm:"default:false"`
+
 	// RetentionDays is the number of days events ingested with this key
 	// should be retained for. A value of 0 means "use the global default"
 	// from config.

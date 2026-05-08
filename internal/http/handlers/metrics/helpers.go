@@ -3,6 +3,7 @@ package metrics
 import (
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
@@ -10,11 +11,40 @@ import (
 )
 
 var safeAttrKey = regexp.MustCompile(`^[a-zA-Z0-9_]+$`)
+var compactRange = regexp.MustCompile(`^(\d+)([hd])$`)
+
+func parseCompactRange(raw string, now time.Time) (cutoff time.Time, bucket30Min bool, ok bool) {
+	matches := compactRange.FindStringSubmatch(strings.ToLower(strings.TrimSpace(raw)))
+	if len(matches) != 3 {
+		return time.Time{}, false, false
+	}
+
+	value, err := strconv.Atoi(matches[1])
+	if err != nil || value <= 0 {
+		return time.Time{}, false, false
+	}
+
+	switch matches[2] {
+	case "h":
+		cutoff = now.Add(-time.Duration(value) * time.Hour)
+		return cutoff, value <= 2, true
+	case "d":
+		cutoff = now.Add(-time.Duration(value) * 24 * time.Hour)
+		return cutoff, false, true
+	default:
+		return time.Time{}, false, false
+	}
+}
 
 // parseRange reads "hours" (float, e.g. 0.5 or 1) or "days" (int) from query and returns
 // cutoff time and, for traffic, whether to use 30-min buckets (true when range <= 2 hours).
 func parseRange(ctx *fiber.Ctx) (cutoff time.Time, bucket30Min bool) {
 	now := time.Now()
+	if raw := ctx.Query("range"); raw != "" {
+		if parsedCutoff, parsedBucket30Min, ok := parseCompactRange(raw, now); ok {
+			return parsedCutoff, parsedBucket30Min
+		}
+	}
 	if h := ctx.Query("hours"); h != "" {
 		if f, err := strconv.ParseFloat(h, 64); err == nil && f > 0 {
 			cutoff = now.Add(-time.Duration(f * float64(time.Hour)))

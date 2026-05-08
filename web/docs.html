@@ -49,4 +49,65 @@
   </div>
 </div>
 
+<div class="panel" style="margin-top: 1rem">
+  <div class="panel-header">
+    <div>
+      <div class="panel-title">Public API access</div>
+      <div class="panel-subtitle">
+        Expose selected aggregated data with a separate read-only public API key.
+      </div>
+    </div>
+  </div>
+  <div class="main-body" style="padding: 0 1rem 1rem">
+    <p style="color: var(--muted); font-size: 0.9rem; margin-bottom: 0.75rem">
+      Each project can enable a separate public API key for read-only public 
+      endpoints. This key is different from the write key used for 
+      <code>/v1/events</code>, and can be rotated independently.
+    </p>
+    <p style="color: var(--muted); font-size: 0.85rem; margin-bottom: 0.5rem">
+      All endpoints under <code>/v1/public/*</code> are secured with that public API key.
+    </p>
+    <p style="color: var(--muted); font-size: 0.85rem; margin-bottom: 0.5rem">
+      Currently available public endpoint:
+    </p>
+    <pre><code>GET /v1/public/top-endpoints?public_key=PROJECT_PUBLIC_KEY&amp;range=7d&amp;status=error&amp;count=10</code></pre>
+    <p style="color: var(--muted); font-size: 0.85rem; margin-top: 0.75rem">
+      Query parameters:
+    </p>
+    <ul style="color: var(--muted); font-size: 0.85rem; margin-top: 0.35rem">
+      <li><code>public_key</code> or <code>key</code>: the public API key for the project</li>
+      <li><code>range</code>: compact range like <code>24h</code> or <code>7d</code> (defaults to <code>1d</code>)</li>
+      <li><code>status</code>: <code>all</code>, <code>success</code>, or <code>error</code></li>
+      <li><code>count</code>: number of routes to return, up to <code>100</code> (defaults to <code>20</code>)</li>
+    </ul>
+    <p style="color: var(--muted); font-size: 0.85rem; margin-top: 0.75rem">
+      Public endpoints are intended for safe aggregated data only. The current
+      <code>top-endpoints</code> endpoint returns route counts and status breakdowns,
+      and does not expose IP addresses, user agents, referers, or individual request data.
+    </p>
+    <p style="color: var(--muted); font-size: 0.85rem; margin-top: 0.75rem; margin-bottom: 0.5rem">
+      Example:
+    </p>
+    <pre><code>{
+  "project": "payments-api",
+  "range": "7d",
+  "status": "error",
+  "count": 10,
+  "routes": [
+    {
+      "route": "/api/orders/submit",
+      "count": 41,
+      "statuses": [
+        { "status": 500, "count": 28 },
+        { "status": 429, "count": 13 }
+      ]
+    }
+  ],
+  "total": 14,
+  "has_more": true,
+  "public_api": true
+}</code></pre>
+  </div>
+</div>
+
 {{end}}

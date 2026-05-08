@@ -81,12 +81,17 @@ func main() {
 	app.Post("/admin/apikeys/create", adminAuth(handlers.CreateAPIKey(sqlDB, cfg)))
 	app.Post("/admin/apikeys/delete", adminAuth(handlers.DeleteAPIKey(sqlDB, cfg)))
 	app.Post("/admin/apikeys/set-active", adminAuth(handlers.SetActiveAPIKey(sqlDB, cfg)))
+	app.Post("/admin/apikeys/set-public", adminAuth(handlers.SetPublicAPIKeyState(sqlDB, cfg)))
+	app.Post("/admin/apikeys/rotate-public", adminAuth(handlers.RotatePublicAPIKey(sqlDB, cfg)))
 
 	app.Get("/admin/healthz", adminAuth(requireAdmin(func(c *fiber.Ctx) error {
 		return c.SendString("admin ok")
 	})))
 
 	app.Post("/v1/events", appmw.BearerAuth(sqlDB)(handlers.IngestHandler(sqlDB, cfg)))
+	app.Use("/v1/public", appmw.PublicAPIKeyAuth(sqlDB)(func(c *fiber.Ctx) error {
+		return c.Next()
+	}))
 
 	app.Get("/v1/metrics/traffic", adminAuth(metrics.TrafficSeries(sqlDB)))
 	app.Get("/v1/metrics/error-rate", adminAuth(metrics.ErrorRateSeries(sqlDB)))
@@ -97,6 +102,7 @@ func main() {
 	app.Get("/v1/metrics/attribute-value-counts", adminAuth(metrics.AttributeValueCounts(sqlDB)))
 	app.Get("/v1/metrics/pattern-counts", adminAuth(metrics.PatternCounts(sqlDB)))
 	app.Get("/v1/metrics/top-routes", adminAuth(metrics.TopRoutes(sqlDB)))
+	app.Get("/v1/public/top-endpoints", metrics.PublicTopRoutes(sqlDB))
 	app.Get("/v1/metrics/recent", adminAuth(metrics.RecentEvents(sqlDB)))
 	app.Get("/v1/metrics/all-events", adminAuth(metrics.AllEvents(sqlDB)))
 	app.Get("/v1/metrics/search-events", adminAuth(metrics.SearchEvents(sqlDB)))

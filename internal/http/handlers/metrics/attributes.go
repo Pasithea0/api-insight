@@ -157,7 +157,7 @@ func AttributeValueCounts(db *gorm.DB) fiber.Handler {
 
 			// Manually count distinct values for virtual attributes
 			var distinctValues []string
-			if err := q.Select("DISTINCT " + column).Pluck(column, &distinctValues).Error; err != nil {
+			if err := q.Select("DISTINCT "+column).Pluck(column, &distinctValues).Error; err != nil {
 				return errResponse(ctx, fiber.StatusInternalServerError, "failed to count virtual attribute values")
 			}
 			totalCount = int64(len(distinctValues))

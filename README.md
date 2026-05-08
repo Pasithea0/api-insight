@@ -69,6 +69,50 @@ Request body:
 ```
 The fields shown are required: path, duration_ms, and optionally method, status, timestamp, remote_ip. Any additional data can be added in the attributes block as key/value JSON (e.g. env, region, IDs).
 
+Public API access
+Each project can also expose a separate read-only public API key from Settings. This key is distinct from the write key used for `/v1/events`, and can be rotated independently.
+
+All endpoints under `/v1/public/*` are secured with that public API key.
+
+Currently available public endpoint:
+
+```bash
+curl "http://localhost:8080/v1/public/top-endpoints?public_key=PROJECT_PUBLIC_KEY&range=7d&status=error&count=10"
+```
+
+Supported query parameters:
+
+- `public_key` or `key`: the project's public API key
+- `range`: compact time range such as `24h` or `7d`
+- `status`: `all`, `success`, or `error`
+- `count`: number of routes to return, capped at `100`
+
+Example response:
+
+```json
+{
+  "project": "payments-api",
+  "range": "7d",
+  "status": "error",
+  "count": 10,
+  "routes": [
+    {
+      "route": "/api/orders/submit",
+      "count": 41,
+      "statuses": [
+        { "status": 500, "count": 28 },
+        { "status": 429, "count": 13 }
+      ]
+    }
+  ],
+  "total": 14,
+  "has_more": true,
+  "public_api": true
+}
+```
+
+Public endpoints are intentionally limited to safe aggregated data. The current `top-endpoints` endpoint does not expose individual events, IP addresses, referers, or user agents.
+
 ---
 
 ## Development

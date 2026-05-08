@@ -52,7 +52,7 @@
   <div class="panel-header">
     <div>
       <div class="panel-title">Projects</div>
-      <div class="panel-subtitle">Each project has its own ingestion key (Bearer token).</div>
+      <div class="panel-subtitle">Each project has its own write key and optional public API access key.</div>
     </div>
   </div>
   <table class="table">
@@ -61,8 +61,8 @@
         <th>Project</th>
         <th>Environment</th>
         <th>Retention</th>
-        <th>Key</th>
-        <th>Status</th>
+        <th>Keys</th>
+        <th>Access</th>
         <th style="text-align:right;">Actions</th>
       </tr>
     </thead>
@@ -79,13 +79,35 @@
               Default ({{$.MaxRetentionDays}} days)
             {{end}}
           </td>
-          <td><code>{{.Key}}</code></td>
           <td>
-            {{if .Active}}
-              <span class="badge badge-primary">Active</span>
-            {{else}}
-              <span class="badge badge-muted">Inactive</span>
-            {{end}}
+            <div style="display: flex; flex-direction: column; gap: 0.35rem; align-items: flex-start;">
+              <span style="overflow: scroll;">Write: <code style="color: var(--muted); font-size: 0.75rem;">{{.Key}}</code></span>
+              {{if .PublicKey}}
+                <span style="overflow: scroll;">Public API: <code style="color: var(--muted); font-size: 0.75rem;">{{.PublicKey}}</code></span>
+              {{else}}
+                <span style="color: var(--muted); font-size: 0.75rem;">Public API access disabled.</span>
+              {{end}}
+            </div>
+          </td>
+          <td>
+            <div style="display: flex; flex-direction: column; gap: 0.35rem; align-items: flex-start;">
+              <span>
+                Write:
+                {{if .Active}}
+                  <span class="badge badge-primary">Active</span>
+                {{else}}
+                  <span class="badge badge-muted">Inactive</span>
+                {{end}}
+              </span>
+              <span>
+                Public API:
+                {{if .PublicEnabled}}
+                  <span class="badge badge-primary">Enabled</span>
+                {{else}}
+                  <span class="badge badge-muted">Disabled</span>
+                {{end}}
+              </span>
+            </div>
           </td>
           <td style="text-align:right;">
             {{if and $.InternalAPIKey (eq .Key $.InternalAPIKey)}}
@@ -93,15 +115,29 @@
             {{else}}
               {{if .Active}}
                 <form method="post" action="/admin/apikeys/set-active?id={{.ID}}&active=false" style="display:inline; margin-right:0.3rem;">
-                  <button type="submit" class="btn-ghost" style="font-size:0.75rem; padding:0.2rem 0.5rem;">Deactivate</button>
+                  <button type="submit" style="font-size:0.5rem; padding:0.1rem 0.2rem;">Deactivate</button>
                 </form>
               {{else}}
                 <form method="post" action="/admin/apikeys/set-active?id={{.ID}}&active=true" style="display:inline; margin-right:0.3rem;">
-                  <button type="submit" class="btn-ghost" style="font-size:0.75rem; padding:0.2rem 0.5rem;">Activate</button>
+                  <button type="submit" style="font-size:0.5rem; padding:0.1rem 0.2rem;">Activate</button>
+                </form>
+              {{end}}
+              {{if .PublicEnabled}}
+                <form method="post" action="/admin/apikeys/set-public?id={{.ID}}&enabled=false" style="display:inline; margin-right:0.3rem;">
+                  <button type="submit" style="font-size:0.5rem; padding:0.1rem 0.2rem;">Disable public access</button>
+                </form>
+              {{else}}
+                <form method="post" action="/admin/apikeys/set-public?id={{.ID}}&enabled=true" style="display:inline; margin-right:0.3rem;">
+                  <button type="submit" style="font-size:0.5rem; padding:0.1rem 0.2rem;">Enable public access</button>
+                </form>
+              {{end}}
+              {{if .PublicKey}}
+                <form method="post" action="/admin/apikeys/rotate-public?id={{.ID}}" style="display:inline; margin-right:0.3rem;" onsubmit="return confirm('Rotate the public API key for {{.Name}}? Existing public clients will need the new key.');">
+                  <button type="submit" style="font-size:0.5rem; padding:0.1rem 0.2rem;">Rotate public key</button>
                 </form>
               {{end}}
               <form method="post" action="/admin/apikeys/delete?id={{.ID}}" style="display:inline;" onsubmit="return confirm('Delete API key {{.Name}}?');">
-                <button type="submit" class="btn-ghost pill-danger" style="font-size:0.75rem; padding:0.2rem 0.5rem;">Delete</button>
+                <button type="submit" style="font-size:0.5rem; padding:0.1rem 0.2rem;">Delete</button>
               </form>
             {{end}}
           </td>
@@ -109,7 +145,7 @@
         {{end}}
       {{else}}
         <tr>
-          <td colspan="5" style="color: var(--muted); font-size: 0.8rem; text-align:center;">
+          <td colspan="7" style="color: var(--muted); font-size: 0.8rem; text-align:center;">
             No projects found. Create one above.
           </td>
         </tr>
