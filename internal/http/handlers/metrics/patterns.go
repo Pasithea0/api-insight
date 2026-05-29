@@ -44,6 +44,8 @@ func PatternCounts(db *gorm.DB) fiber.Handler {
 			return errResponse(ctx, fiber.StatusBadRequest, "invalid field")
 		}
 
+		isFieldAttr := field != "route" && field != "remote_ip" && field != "method" && field != "path" && field != "status"
+
 		type countRow struct {
 			Value        string `json:"value"`
 			CompareValue string `json:"compare_value,omitempty"`
@@ -57,6 +59,8 @@ func PatternCounts(db *gorm.DB) fiber.Handler {
 			if !ok {
 				return errResponse(ctx, fiber.StatusBadRequest, "invalid compare_by")
 			}
+			
+			isCompareAttr := compareBy != "route" && compareBy != "remote_ip" && compareBy != "method" && compareBy != "path" && compareBy != "status"
 
 			type compareRow struct {
 				Value        string `json:"value"`
@@ -72,6 +76,13 @@ func PatternCounts(db *gorm.DB) fiber.Handler {
 				Group("value, compare_value, status").
 				Order("count DESC").
 				Limit(300)
+				
+			if isFieldAttr {
+				q = q.Where("jsonb_exists(attributes::jsonb, ?)", field)
+			}
+			if isCompareAttr && field != compareBy {
+				q = q.Where("jsonb_exists(attributes::jsonb, ?)", compareBy)
+			}
 
 			if project != "" {
 				q = q.Where("project = ?", project)
@@ -99,6 +110,10 @@ func PatternCounts(db *gorm.DB) fiber.Handler {
 				Group("value").
 				Order("count DESC").
 				Limit(100)
+				
+			if isFieldAttr {
+				q = q.Where("jsonb_exists(attributes::jsonb, ?)", field)
+			}
 
 			if project != "" {
 				q = q.Where("project = ?", project)
