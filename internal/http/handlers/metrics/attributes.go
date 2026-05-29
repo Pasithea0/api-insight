@@ -130,7 +130,6 @@ func AttributeValueCounts(db *gorm.DB) fiber.Handler {
 			Count int64  `json:"count"`
 		}
 		var rows []countRow
-		var totalCount int64
 
 		// Handle virtual attributes (top-level columns)
 		var column string
@@ -148,6 +147,8 @@ func AttributeValueCounts(db *gorm.DB) fiber.Handler {
 			isStatus = true
 		}
 
+		hasMore := false
+
 		if column != "" {
 			q := db.Model(&dbpkg.Event{}).
 				Where("user_id = ? AND created_at >= ?", userID, cutoff)
@@ -155,18 +156,11 @@ func AttributeValueCounts(db *gorm.DB) fiber.Handler {
 				q = q.Where("project = ?", project)
 			}
 
-			// Manually count distinct values for virtual attributes
-			var distinctValues []string
-			if err := q.Select("DISTINCT "+column).Pluck(column, &distinctValues).Error; err != nil {
-				return errResponse(ctx, fiber.StatusInternalServerError, "failed to count virtual attribute values")
-			}
-			totalCount = int64(len(distinctValues))
-
 			if err := q.
 				Select(column + " AS value, COUNT(*) AS count").
 				Group(column).
 				Order("count DESC").
-				Limit(limit).
+				Limit(limit + 1).
 				Offset(offset).
 				Scan(&rows).Error; err != nil {
 				return errResponse(ctx, fiber.StatusInternalServerError, "failed to query virtual attribute counts")
@@ -178,17 +172,11 @@ func AttributeValueCounts(db *gorm.DB) fiber.Handler {
 				q = q.Where("project = ?", project)
 			}
 
-			var distinctValues []string
-			if err := q.Select("DISTINCT status").Pluck("status", &distinctValues).Error; err != nil {
-				return errResponse(ctx, fiber.StatusInternalServerError, "failed to count virtual attribute values")
-			}
-			totalCount = int64(len(distinctValues))
-
 			if err := q.
 				Select("CAST(status AS TEXT) AS value, COUNT(*) AS count").
 				Group("status").
 				Order("count DESC").
-				Limit(limit).
+				Limit(limit + 1).
 				Offset(offset).
 				Scan(&rows).Error; err != nil {
 				return errResponse(ctx, fiber.StatusInternalServerError, "failed to query virtual attribute counts")
@@ -198,31 +186,30 @@ func AttributeValueCounts(db *gorm.DB) fiber.Handler {
 				return errResponse(ctx, fiber.StatusBadRequest, "invalid key")
 			}
 
-			countSQL := "SELECT COUNT(DISTINCT events.attributes::jsonb ->> ?) FROM events WHERE events.user_id = ? AND events.created_at >= ? AND jsonb_exists(events.attributes::jsonb, ?)"
 			dataSQL := "SELECT events.attributes::jsonb ->> ? AS value, COUNT(*) AS count FROM events WHERE events.user_id = ? AND events.created_at >= ? AND jsonb_exists(events.attributes::jsonb, ?) GROUP BY 1 ORDER BY count DESC LIMIT ? OFFSET ?"
 			args := []any{attrKey, userID, cutoff, attrKey}
 
 			if project != "" {
-				countSQL = "SELECT COUNT(DISTINCT events.attributes::jsonb ->> ?) FROM events WHERE events.user_id = ? AND events.project = ? AND events.created_at >= ? AND jsonb_exists(events.attributes::jsonb, ?)"
 				dataSQL = "SELECT events.attributes::jsonb ->> ? AS value, COUNT(*) AS count FROM events WHERE events.user_id = ? AND events.project = ? AND events.created_at >= ? AND jsonb_exists(events.attributes::jsonb, ?) GROUP BY 1 ORDER BY count DESC LIMIT ? OFFSET ?"
 				args = []any{attrKey, userID, project, cutoff, attrKey}
 			}
 
-			if err := db.Raw(countSQL, args...).Scan(&totalCount).Error; err != nil {
-				return errResponse(ctx, fiber.StatusInternalServerError, "failed to count attribute values")
-			}
-
-			dataArgs := append(args, limit, offset)
+			dataArgs := append(args, limit+1, offset)
 			if err := db.Raw(dataSQL, dataArgs...).Scan(&rows).Error; err != nil {
 				return errResponse(ctx, fiber.StatusInternalServerError, "failed to query attribute value counts")
 			}
+		}
+
+		if len(rows) > limit {
+			hasMore = true
+			rows = rows[:limit]
 		}
 
 		counts := make([]attributeValueCount, 0, len(rows))
 		for _, row := range rows {
 			counts = append(counts, attributeValueCount{Value: row.Value, Count: row.Count})
 		}
-		hasMore := offset+limit < int(totalCount)
-		return jsonResponse(ctx, map[string]any{"counts": counts, "total": totalCount, "has_more": hasMore})
+		
+		return jsonResponse(ctx, map[string]any{"counts": counts, "total": 0, "has_more": hasMore})
 	}
 }

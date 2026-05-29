@@ -98,7 +98,7 @@ func TrafficSeries(db *gorm.DB) fiber.Handler {
 			sql += ` AND status >= 400`
 		}
 		if attrKey != "" && attrValue != "" && safeAttrKey.MatchString(attrKey) {
-			sql += ` AND attributes::jsonb ->> ? = ?`
+			sql += ` AND attributes @> CAST(json_build_object(?, ?) AS jsonb)`
 			args = append(args, attrKey, attrValue)
 		}
 		if bucket30Min {

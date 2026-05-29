@@ -90,21 +90,26 @@ func queryTopRoutes(db *gorm.DB, params topRoutesQuery) (topRoutesResult, error)
 	}
 	q = applyMetricsFilters(q, params.Status, params.AttrKey, params.AttrValue)
 
-	var totalCount int64
-	if err := q.Select("COUNT(DISTINCT route)").Scan(&totalCount).Error; err != nil {
-		return topRoutesResult{}, err
-	}
-
 	var rows []topRoute
 	if err := q.
 		Select("route as route, count(*) as count").
 		Group("route").
 		Order("count(*) DESC").
-		Limit(params.Limit).
+		Limit(params.Limit + 1).
 		Offset(params.Offset).
 		Scan(&rows).Error; err != nil {
 		return topRoutesResult{}, err
 	}
+
+	hasMore := false
+	if len(rows) > params.Limit {
+		hasMore = true
+		rows = rows[:params.Limit]
+	}
+
+	// We no longer calculate total distinct routes as it is too slow.
+	// We return 0 for total, the frontend can rely on has_more.
+	var totalCount int64 = 0
 
 	if len(rows) > 0 {
 		routeNames := make([]string, 0, len(rows))
@@ -147,7 +152,7 @@ func queryTopRoutes(db *gorm.DB, params topRoutesQuery) (topRoutesResult, error)
 	return topRoutesResult{
 		Routes:  rows,
 		Total:   totalCount,
-		HasMore: params.Offset+params.Limit < int(totalCount),
+		HasMore: hasMore,
 	}, nil
 }
 

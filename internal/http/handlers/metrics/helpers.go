@@ -81,7 +81,8 @@ func applyMetricsFilters(q *gorm.DB, status, attrKey, attrValue string) *gorm.DB
 		q = q.Where("status >= ?", 400)
 	}
 	if attrKey != "" && attrValue != "" && safeAttrKey.MatchString(attrKey) {
-		q = q.Where("attributes::jsonb ->> ? = ?", attrKey, attrValue)
+		// Use @> operator to hit the GIN index efficiently
+		q = q.Where("attributes @> CAST(json_build_object(?, ?) AS jsonb)", attrKey, attrValue)
 	}
 	return q
 }
