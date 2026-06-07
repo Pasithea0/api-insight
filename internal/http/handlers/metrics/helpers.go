@@ -8,6 +8,8 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 	"gorm.io/gorm"
+
+	dbpkg "apiinsight/internal/db"
 )
 
 var safeAttrKey = regexp.MustCompile(`^[a-zA-Z0-9_]+$`)
@@ -71,6 +73,27 @@ func jsonResponse(ctx *fiber.Ctx, data map[string]any) error {
 
 func errResponse(ctx *fiber.Ctx, code int, msg string) error {
 	return ctx.Status(code).SendString(msg)
+}
+
+// scopeUserID returns the user_id value to filter by.
+// Non-admin users always see only their own data.
+// Admin users see all data, or data for a specific user if ?user_id= is provided.
+func scopeUserID(ctx *fiber.Ctx, user *dbpkg.User) string {
+	if user.IsAdmin {
+		if uid := ctx.Query("user_id"); uid != "" {
+			return uid
+		}
+		return ""
+	}
+	return strconv.Itoa(int(user.ID))
+}
+
+// scopeQueryUserID adds a user_id filter to the query unless userID is empty (admin view all).
+func scopeQueryUserID(q *gorm.DB, userID string) *gorm.DB {
+	if userID != "" {
+		return q.Where("user_id = ?", userID)
+	}
+	return q
 }
 
 func applyMetricsFilters(q *gorm.DB, status, attrKey, attrValue string) *gorm.DB {

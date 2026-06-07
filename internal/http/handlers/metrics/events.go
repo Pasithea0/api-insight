@@ -28,11 +28,11 @@ func RecentEvents(db *gorm.DB) fiber.Handler {
 		if !ok {
 			return nil
 		}
+		userID := scopeUserID(ctx, user)
 		project := ctx.Query("project")
 		status := ctx.Query("status")
 		attrKey := ctx.Query("attr_key")
 		attrValue := ctx.Query("attr_value")
-		// Default to last 24h; use a generous range to avoid full table scans
 		cutoff, _ := parseRange(ctx)
 
 		limit := 10
@@ -51,9 +51,8 @@ func RecentEvents(db *gorm.DB) fiber.Handler {
 			}
 		}
 
-		q := db.Model(&dbpkg.Event{}).
-			Where("user_id = ?", strconv.Itoa(int(user.ID))).
-			Where("created_at >= ?", cutoff)
+		q := db.Model(&dbpkg.Event{}).Where("created_at >= ?", cutoff)
+		q = scopeQueryUserID(q, userID)
 		if project != "" {
 			q = q.Where("project = ?", project)
 		}
@@ -98,6 +97,7 @@ func AllEvents(db *gorm.DB) fiber.Handler {
 		if !ok {
 			return nil
 		}
+		userID := scopeUserID(ctx, user)
 		project := ctx.Query("project")
 		status := ctx.Query("status")
 		attrKey := ctx.Query("attr_key")
@@ -120,9 +120,8 @@ func AllEvents(db *gorm.DB) fiber.Handler {
 			}
 		}
 
-		q := db.Model(&dbpkg.Event{}).
-			Where("user_id = ?", strconv.Itoa(int(user.ID))).
-			Where("created_at >= ?", cutoff)
+		q := db.Model(&dbpkg.Event{}).Where("created_at >= ?", cutoff)
+		q = scopeQueryUserID(q, userID)
 		if project != "" {
 			q = q.Where("project = ?", project)
 		}
@@ -167,6 +166,7 @@ func SearchEvents(db *gorm.DB) fiber.Handler {
 		if !ok {
 			return nil
 		}
+		userID := scopeUserID(ctx, user)
 		field := ctx.Query("field") // "route", "remote_ip", or an attribute key
 		pattern := ctx.Query("pattern")
 		matchType := ctx.Query("type") // "includes", "ends_with", "starts_with"
@@ -177,7 +177,6 @@ func SearchEvents(db *gorm.DB) fiber.Handler {
 
 		project := ctx.Query("project")
 		cutoff, _ := parseRange(ctx)
-		userID := strconv.Itoa(int(user.ID))
 
 		var sqlPattern string
 		switch matchType {
@@ -211,8 +210,9 @@ func SearchEvents(db *gorm.DB) fiber.Handler {
 		}
 
 		q := db.Model(&dbpkg.Event{}).
-			Where("user_id = ? AND created_at >= ?", userID, cutoff).
-			Where(expr+" LIKE ?", sqlPattern)
+			Where("created_at >= ?", cutoff)
+		q = scopeQueryUserID(q, userID)
+		q = q.Where(expr+" LIKE ?", sqlPattern)
 
 		if project != "" {
 			q = q.Where("project = ?", project)

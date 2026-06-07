@@ -16,12 +16,12 @@ func AttributeKeys(db *gorm.DB) fiber.Handler {
 		if !ok {
 			return nil
 		}
+		userID := scopeUserID(ctx, user)
 		project := ctx.Query("project")
-		userID := strconv.Itoa(int(user.ID))
 
 		// Query from cached attribute key index
-		q := db.Model(&dbpkg.AttributeKeyIndex{}).
-			Where("user_id = ?", userID)
+		q := db.Model(&dbpkg.AttributeKeyIndex{})
+		q = scopeQueryUserID(q, userID)
 		if project != "" {
 			q = q.Where("project = ?", project)
 		}
@@ -56,6 +56,7 @@ func AttributeValues(db *gorm.DB) fiber.Handler {
 		if !ok {
 			return nil
 		}
+		userID := scopeUserID(ctx, user)
 		attrKey := ctx.Query("key")
 		if attrKey == "" || !safeAttrKey.MatchString(attrKey) {
 			return errResponse(ctx, fiber.StatusBadRequest, "invalid or missing key")
@@ -64,26 +65,25 @@ func AttributeValues(db *gorm.DB) fiber.Handler {
 		project := ctx.Query("project")
 		cutoff, _ := parseRange(ctx)
 
+		sb := "SELECT DISTINCT events.attributes::jsonb ->> ? AS value FROM events WHERE events.created_at >= ?"
+		args := []any{attrKey, cutoff}
+		if userID != "" {
+			sb += " AND events.user_id = ?"
+			args = append(args, userID)
+		}
+		if project != "" {
+			sb += " AND events.project = ?"
+			args = append(args, project)
+		}
+		sb += " AND jsonb_exists(events.attributes::jsonb, ?)"
+		args = append(args, attrKey)
+
 		type valRow struct {
 			Value string `json:"value"`
 		}
 		var rows []valRow
-		if project != "" {
-			err := db.Raw(
-				"SELECT DISTINCT events.attributes::jsonb ->> ? AS value FROM events WHERE events.user_id = ? AND events.project = ? AND events.created_at >= ? AND jsonb_exists(events.attributes::jsonb, ?)",
-				attrKey, strconv.Itoa(int(user.ID)), project, cutoff, attrKey,
-			).Scan(&rows).Error
-			if err != nil {
-				return errResponse(ctx, fiber.StatusInternalServerError, "failed to query attribute values")
-			}
-		} else {
-			err := db.Raw(
-				"SELECT DISTINCT events.attributes::jsonb ->> ? AS value FROM events WHERE events.user_id = ? AND events.created_at >= ? AND jsonb_exists(events.attributes::jsonb, ?)",
-				attrKey, strconv.Itoa(int(user.ID)), cutoff, attrKey,
-			).Scan(&rows).Error
-			if err != nil {
-				return errResponse(ctx, fiber.StatusInternalServerError, "failed to query attribute values")
-			}
+		if err := db.Raw(sb, args...).Scan(&rows).Error; err != nil {
+			return errResponse(ctx, fiber.StatusInternalServerError, "failed to query attribute values")
 		}
 
 		values := make([]string, 0, len(rows))
@@ -107,6 +107,7 @@ func AttributeValueCounts(db *gorm.DB) fiber.Handler {
 		if !ok {
 			return nil
 		}
+		userID := scopeUserID(ctx, user)
 		attrKey := ctx.Query("key")
 		if attrKey == "" {
 			return errResponse(ctx, fiber.StatusBadRequest, "missing key")
@@ -114,7 +115,6 @@ func AttributeValueCounts(db *gorm.DB) fiber.Handler {
 
 		project := ctx.Query("project")
 		cutoff, _ := parseRange(ctx)
-		userID := strconv.Itoa(int(user.ID))
 
 		limit := 100
 		if s := ctx.Query("limit"); s != "" {
@@ -157,8 +157,8 @@ func AttributeValueCounts(db *gorm.DB) fiber.Handler {
 		hasMore := false
 
 		if column != "" {
-			q := db.Model(&dbpkg.Event{}).
-				Where("user_id = ? AND created_at >= ?", userID, cutoff)
+			q := db.Model(&dbpkg.Event{}).Where("created_at >= ?", cutoff)
+			q = scopeQueryUserID(q, userID)
 			if project != "" {
 				q = q.Where("project = ?", project)
 			}
@@ -173,8 +173,8 @@ func AttributeValueCounts(db *gorm.DB) fiber.Handler {
 				return errResponse(ctx, fiber.StatusInternalServerError, "failed to query virtual attribute counts")
 			}
 		} else if isStatus {
-			q := db.Model(&dbpkg.Event{}).
-				Where("user_id = ? AND created_at >= ?", userID, cutoff)
+			q := db.Model(&dbpkg.Event{}).Where("created_at >= ?", cutoff)
+			q = scopeQueryUserID(q, userID)
 			if project != "" {
 				q = q.Where("project = ?", project)
 			}
@@ -193,16 +193,19 @@ func AttributeValueCounts(db *gorm.DB) fiber.Handler {
 				return errResponse(ctx, fiber.StatusBadRequest, "invalid key")
 			}
 
-			dataSQL := "SELECT events.attributes::jsonb ->> ? AS value, COUNT(*) AS count FROM events WHERE events.user_id = ? AND events.created_at >= ? AND jsonb_exists(events.attributes::jsonb, ?) GROUP BY 1 ORDER BY count DESC LIMIT ? OFFSET ?"
-			args := []any{attrKey, userID, cutoff, attrKey}
-
-			if project != "" {
-				dataSQL = "SELECT events.attributes::jsonb ->> ? AS value, COUNT(*) AS count FROM events WHERE events.user_id = ? AND events.project = ? AND events.created_at >= ? AND jsonb_exists(events.attributes::jsonb, ?) GROUP BY 1 ORDER BY count DESC LIMIT ? OFFSET ?"
-				args = []any{attrKey, userID, project, cutoff, attrKey}
+			dataSQL := "SELECT events.attributes::jsonb ->> ? AS value, COUNT(*) AS count FROM events WHERE events.created_at >= ?"
+			args := []any{attrKey, cutoff}
+			if userID != "" {
+				dataSQL += " AND events.user_id = ?"
+				args = append(args, userID)
 			}
-
-			dataArgs := append(args, limit+1, offset)
-			if err := db.Raw(dataSQL, dataArgs...).Scan(&rows).Error; err != nil {
+			if project != "" {
+				dataSQL += " AND events.project = ?"
+				args = append(args, project)
+			}
+			dataSQL += " AND jsonb_exists(events.attributes::jsonb, ?) GROUP BY 1 ORDER BY count DESC LIMIT ? OFFSET ?"
+			args = append(args, attrKey, limit+1, offset)
+			if err := db.Raw(dataSQL, args...).Scan(&rows).Error; err != nil {
 				return errResponse(ctx, fiber.StatusInternalServerError, "failed to query attribute value counts")
 			}
 		}

@@ -38,7 +38,7 @@ func Export(db *gorm.DB) fiber.Handler {
 		attrKey := ctx.Query("attr_key")
 		attrValue := ctx.Query("attr_value")
 		cutoff, _ := parseRange(ctx)
-		userID := strconv.Itoa(int(user.ID))
+		userID := scopeUserID(ctx, user)
 
 		limit := 100
 		if s := ctx.Query("limit"); s != "" {
@@ -58,7 +58,8 @@ func Export(db *gorm.DB) fiber.Handler {
 
 		switch source {
 		case "recent", "all-events", "search-events":
-			q := db.Model(&dbpkg.Event{}).Where("user_id = ?", userID).Where("created_at >= ?", cutoff)
+			q := db.Model(&dbpkg.Event{}).Where("created_at >= ?", cutoff)
+			q = scopeQueryUserID(q, userID)
 			if project != "" {
 				q = q.Where("project = ?", project)
 			}
@@ -136,16 +137,20 @@ func Export(db *gorm.DB) fiber.Handler {
 				return nil
 			}
 
-			dataSQL := "SELECT events.attributes::jsonb ->> ? AS value, COUNT(*) AS count FROM events WHERE events.user_id = ? AND events.created_at >= ? AND jsonb_exists(events.attributes::jsonb, ?) GROUP BY 1 ORDER BY count DESC LIMIT ? OFFSET ?"
-			args := []any{attrKey, userID, cutoff, attrKey}
-
-			if project != "" {
-				dataSQL = "SELECT events.attributes::jsonb ->> ? AS value, COUNT(*) AS count FROM events WHERE events.user_id = ? AND events.project = ? AND events.created_at >= ? AND jsonb_exists(events.attributes::jsonb, ?) GROUP BY 1 ORDER BY count DESC LIMIT ? OFFSET ?"
-				args = []any{attrKey, userID, project, cutoff, attrKey}
+			dataSQL := "SELECT events.attributes::jsonb ->> ? AS value, COUNT(*) AS count FROM events WHERE events.created_at >= ?"
+			args := []any{attrKey, cutoff}
+			if userID != "" {
+				dataSQL += " AND events.user_id = ?"
+				args = append(args, userID)
 			}
+			if project != "" {
+				dataSQL += " AND events.project = ?"
+				args = append(args, project)
+			}
+			dataSQL += " AND jsonb_exists(events.attributes::jsonb, ?) GROUP BY 1 ORDER BY count DESC LIMIT ? OFFSET ?"
+			args = append(args, attrKey, limit, offset)
 
-			dataArgs := append(args, limit, offset)
-			if err := db.Raw(dataSQL, dataArgs...).Scan(&rows).Error; err != nil {
+			if err := db.Raw(dataSQL, args...).Scan(&rows).Error; err != nil {
 				log.Printf("failed to query attribute value counts for export: %v", err)
 				return nil
 			}
@@ -171,8 +176,10 @@ func exportTopRoutesFromBuckets(db *gorm.DB, userID, project, status string, cut
 	routeMap := make(map[string]*routeAgg)
 
 	q := db.Model(&dbpkg.RouteBucket{}).
-		Where("user_id = ?", userID).
 		Where("bucket_start >= ?", bucketCutoff)
+	if userID != "" {
+		q = q.Where("user_id = ?", userID)
+	}
 	if project != "" {
 		q = q.Where("project = ?", project)
 	}
@@ -203,8 +210,10 @@ func exportTopRoutesFromBuckets(db *gorm.DB, userID, project, status string, cut
 	}
 	if partialStart.Before(now) {
 		pq := db.Model(&dbpkg.Event{}).
-			Where("user_id = ?", userID).
 			Where("created_at >= ?", partialStart)
+		if userID != "" {
+			pq = pq.Where("user_id = ?", userID)
+		}
 		if project != "" {
 			pq = pq.Where("project = ?", project)
 		}
@@ -268,8 +277,10 @@ func exportTopRoutesFromBuckets(db *gorm.DB, userID, project, status string, cut
 
 func exportTopRoutesFromEvents(db *gorm.DB, userID, project, status, attrKey, attrValue string, cutoff time.Time, limit, offset int) ([]topRoute, error) {
 	q := db.Model(&dbpkg.Event{}).
-		Where("user_id = ?", userID).
 		Where("created_at >= ?", cutoff)
+	if userID != "" {
+		q = q.Where("user_id = ?", userID)
+	}
 	if project != "" {
 		q = q.Where("project = ?", project)
 	}

@@ -1,7 +1,6 @@
 package metrics
 
 import (
-	"strconv"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
@@ -17,11 +16,13 @@ func ErrorRateSeries(db *gorm.DB) fiber.Handler {
 		if !ok {
 			return nil
 		}
+		userID := scopeUserID(ctx, user)
 		project := ctx.Query("project")
 		cutoff, _ := parseRange(ctx)
 		cutoff = cutoff.UTC()
 
-		q := db.Model(&dbpkg.MetricBucket{}).Where("user_id = ?", strconv.Itoa(int(user.ID))).Where("bucket_start >= ?", cutoff)
+		q := db.Model(&dbpkg.MetricBucket{}).Where("bucket_start >= ?", cutoff)
+		q = scopeQueryUserID(q, userID)
 		if project != "" {
 			q = q.Where("project = ?", project)
 		}

@@ -1,7 +1,6 @@
 package metrics
 
 import (
-	"strconv"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
@@ -22,6 +21,7 @@ func TrafficSeries(db *gorm.DB) fiber.Handler {
 		if !ok {
 			return nil
 		}
+		userID := scopeUserID(ctx, user)
 		project := ctx.Query("project")
 		cutoff, bucket30Min := parseRange(ctx)
 		status := ctx.Query("status")
@@ -33,7 +33,8 @@ func TrafficSeries(db *gorm.DB) fiber.Handler {
 			// Get historical data from buckets
 			var buckets []trafficPoint
 			q := db.Model(&dbpkg.MetricBucket{}).
-				Where("user_id = ? AND bucket_start >= ?", strconv.Itoa(int(user.ID)), cutoff.UTC().Truncate(time.Hour))
+				Where("bucket_start >= ?", cutoff.UTC().Truncate(time.Hour))
+			q = scopeQueryUserID(q, userID)
 			if project != "" {
 				q = q.Where("project = ?", project)
 			}
@@ -61,7 +62,8 @@ func TrafficSeries(db *gorm.DB) fiber.Handler {
 
 			var currentHour trafficPoint
 			cq := db.Model(&dbpkg.Event{}).
-				Where("user_id = ? AND created_at >= ?", strconv.Itoa(int(user.ID)), lastBucketTime)
+				Where("created_at >= ?", lastBucketTime)
+			cq = scopeQueryUserID(cq, userID)
 			if project != "" {
 				cq = cq.Where("project = ?", project)
 			}
@@ -86,8 +88,12 @@ func TrafficSeries(db *gorm.DB) fiber.Handler {
 		} else {
 			bucketExpr = `to_char(date_trunc('hour', created_at), 'YYYY-MM-DD"T"HH24:MI:SS') || 'Z'`
 		}
-		sql := `SELECT ` + bucketExpr + ` AS bucket, count(*) AS count FROM events WHERE user_id = ? AND created_at >= ?`
-		args := []any{strconv.Itoa(int(user.ID)), cutoff}
+		sql := `SELECT ` + bucketExpr + ` AS bucket, count(*) AS count FROM events WHERE created_at >= ?`
+		args := []any{cutoff}
+		if userID != "" {
+			sql += ` AND user_id = ?`
+			args = append(args, userID)
+		}
 		if project != "" {
 			sql += ` AND project = ?`
 			args = append(args, project)

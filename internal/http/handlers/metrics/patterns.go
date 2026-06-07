@@ -1,8 +1,6 @@
 package metrics
 
 import (
-	"strconv"
-
 	"github.com/gofiber/fiber/v2"
 	"gorm.io/gorm"
 
@@ -16,6 +14,7 @@ func PatternCounts(db *gorm.DB) fiber.Handler {
 		if !ok {
 			return nil
 		}
+		userID := scopeUserID(ctx, user)
 		field := ctx.Query("field") // "route", "remote_ip", or an attribute key
 		compareBy := ctx.Query("compare_by")
 		pattern := ctx.Query("pattern")
@@ -27,7 +26,6 @@ func PatternCounts(db *gorm.DB) fiber.Handler {
 
 		project := ctx.Query("project")
 		cutoff, _ := parseRange(ctx)
-		userID := strconv.Itoa(int(user.ID))
 
 		var sqlPattern string
 		switch matchType {
@@ -70,7 +68,9 @@ func PatternCounts(db *gorm.DB) fiber.Handler {
 			}
 			var compareRows []compareRow
 			q := db.Model(&dbpkg.Event{}).
-				Where("user_id = ? AND created_at >= ?", userID, cutoff).
+				Where("created_at >= ?", cutoff)
+			q = scopeQueryUserID(q, userID)
+			q = q.
 				Where(expr+" LIKE ?", sqlPattern).
 				Select(expr + " AS value, " + compareExpr + " AS compare_value, status AS status, COUNT(*) AS count").
 				Group("value, compare_value, status").
@@ -104,7 +104,9 @@ func PatternCounts(db *gorm.DB) fiber.Handler {
 			}
 		} else {
 			q := db.Model(&dbpkg.Event{}).
-				Where("user_id = ? AND created_at >= ?", userID, cutoff).
+				Where("created_at >= ?", cutoff)
+			q = scopeQueryUserID(q, userID)
+			q = q.
 				Where(expr+" LIKE ?", sqlPattern).
 				Select(expr + " AS value, COUNT(*) AS count").
 				Group("value").

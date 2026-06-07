@@ -117,8 +117,8 @@ func queryTopRoutesFromBuckets(db *gorm.DB, params topRoutesQuery) (topRoutesRes
 	var bucketRows []bucketAggRow
 	q := db.Model(&dbpkg.RouteBucket{}).
 		Select("route, "+countField+", "+errorField).
-		Where("user_id = ?", params.OwnerUserID).
 		Where("bucket_start >= ?", bucketCutoff)
+	q = scopeQueryUserID(q, params.OwnerUserID)
 	if params.Project != "" {
 		q = q.Where("project = ?", params.Project)
 	}
@@ -149,9 +149,9 @@ func queryTopRoutesFromBuckets(db *gorm.DB, params topRoutesQuery) (topRoutesRes
 	var scRows []scBucketRow
 	sq := db.Model(&dbpkg.RouteBucket{}).
 		Select("route, status_counts").
-		Where("user_id = ?", params.OwnerUserID).
 		Where("bucket_start >= ?", bucketCutoff).
 		Where("route IN ?", routeNames)
+	sq = scopeQueryUserID(sq, params.OwnerUserID)
 	if params.Project != "" {
 		sq = sq.Where("project = ?", params.Project)
 	}
@@ -215,8 +215,8 @@ func queryTopRoutesFromBuckets(db *gorm.DB, params topRoutesQuery) (topRoutesRes
 
 func queryTopRoutesFromEvents(db *gorm.DB, params topRoutesQuery) (topRoutesResult, error) {
 	q := db.Model(&dbpkg.Event{}).
-		Where("user_id = ?", params.OwnerUserID).
 		Where("created_at >= ?", params.Cutoff)
+	q = scopeQueryUserID(q, params.OwnerUserID)
 	if params.Project != "" {
 		q = q.Where("project = ?", params.Project)
 	}
@@ -254,8 +254,8 @@ func queryTopRoutesFromEvents(db *gorm.DB, params topRoutesQuery) (topRoutesResu
 			}
 			var scRows []scRow
 			qs := db.Model(&dbpkg.Event{}).
-				Where("user_id = ?", params.OwnerUserID).
 				Where("created_at >= ?", params.Cutoff)
+			qs = scopeQueryUserID(qs, params.OwnerUserID)
 			if params.Project != "" {
 				qs = qs.Where("project = ?", params.Project)
 			}
@@ -289,6 +289,7 @@ func TopRoutes(db *gorm.DB) fiber.Handler {
 		if !ok {
 			return nil
 		}
+		userID := scopeUserID(ctx, user)
 		project := ctx.Query("project")
 		cutoff, _ := parseRange(ctx)
 		status := normalizeStatusFilter(ctx.Query("status"))
@@ -303,7 +304,7 @@ func TopRoutes(db *gorm.DB) fiber.Handler {
 		}
 
 		result, err := queryTopRoutes(db, topRoutesQuery{
-			OwnerUserID: strconv.Itoa(int(user.ID)),
+			OwnerUserID: userID,
 			Project:     project,
 			Cutoff:      cutoff,
 			Status:      status,
