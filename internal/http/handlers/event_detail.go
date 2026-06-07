@@ -2,14 +2,25 @@ package handlers
 
 import (
 	"encoding/json"
-	"strconv"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
 	"gorm.io/gorm"
-
-	dbpkg "apiinsight/internal/db"
 )
+
+type eventDetailRow struct {
+	ID         uint
+	CreatedAt  time.Time
+	ExpiresAt  *time.Time
+	UserID     string
+	Project    string
+	Route      string
+	Method     string
+	Status     int
+	DurationMs int64
+	RemoteIP   string
+	Attributes []byte
+}
 
 func EventDetail(db *gorm.DB) fiber.Handler {
 	return func(ctx *fiber.Ctx) error {
@@ -21,20 +32,16 @@ func EventDetail(db *gorm.DB) fiber.Handler {
 		if idStr == "" {
 			return ctx.Status(fiber.StatusBadRequest).SendString("id required")
 		}
-		id, err := strconv.Atoi(idStr)
-		if err != nil || id <= 0 {
-			return ctx.Status(fiber.StatusBadRequest).SendString("invalid id")
-		}
 
-		var e dbpkg.Event
-		if err := db.First(&e, id).Error; err != nil {
-			if err == gorm.ErrRecordNotFound {
-				return ctx.Status(fiber.StatusNotFound).SendString("event not found")
-			}
+		var row eventDetailRow
+		if err := db.Raw("SELECT id, created_at, expires_at, user_id, project, route, method, status, duration_ms, remote_ip, attributes FROM events WHERE id = ?", idStr).Scan(&row).Error; err != nil {
 			return ctx.Status(fiber.StatusInternalServerError).SendString("failed to load event")
 		}
+		if row.ID == 0 {
+			return ctx.Status(fiber.StatusNotFound).SendString("event not found")
+		}
 
-		if !user.IsAdmin && e.UserID != strconv.Itoa(int(user.ID)) {
+		if !user.IsAdmin && row.UserID != idStr {
 			return ctx.Status(fiber.StatusForbidden).SendString("forbidden")
 		}
 
@@ -46,21 +53,26 @@ func EventDetail(db *gorm.DB) fiber.Handler {
 		if user.DateFormat != "" {
 			dateFormat = user.DateFormat
 		}
-		createdAtDisplay := FormatEventDateTime(e.CreatedAt, timeFormat, dateFormat)
+		createdAtDisplay := FormatEventDateTime(row.CreatedAt, timeFormat, dateFormat)
+
+		var attrs any
+		if len(row.Attributes) > 0 {
+			json.Unmarshal(row.Attributes, &attrs)
+		}
 
 		resp := map[string]any{
-			"id":                 e.ID,
-			"created_at":         e.CreatedAt.Format(time.RFC3339Nano),
+			"id":                 row.ID,
+			"created_at":         row.CreatedAt.Format(time.RFC3339Nano),
 			"created_at_display": createdAtDisplay,
-			"expires_at":         e.ExpiresAt,
-			"method":             e.Method,
-			"route":              e.Route,
-			"status":             e.Status,
-			"duration_ms":        e.DurationMs,
-			"project":            e.Project,
-			"user_id":            e.UserID,
-			"remote_ip":          e.RemoteIP,
-			"attributes":         e.Attributes,
+			"expires_at":         row.ExpiresAt,
+			"method":             row.Method,
+			"route":              row.Route,
+			"status":             row.Status,
+			"duration_ms":        row.DurationMs,
+			"project":            row.Project,
+			"user_id":            row.UserID,
+			"remote_ip":          row.RemoteIP,
+			"attributes":         attrs,
 		}
 
 		ctx.Set("Content-Type", "application/json")
