@@ -34,7 +34,7 @@ func EventDetail(db *gorm.DB) fiber.Handler {
 			return ctx.Status(fiber.StatusInternalServerError).SendString("failed to load event")
 		}
 
-		if e.UserID != strconv.Itoa(int(user.ID)) {
+		if !user.IsAdmin && e.UserID != strconv.Itoa(int(user.ID)) {
 			return ctx.Status(fiber.StatusForbidden).SendString("forbidden")
 		}
 

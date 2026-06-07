@@ -2,6 +2,7 @@ package db
 
 import (
 	"errors"
+	"log"
 	"strings"
 	"time"
 
@@ -11,6 +12,12 @@ import (
 
 	"apiinsight/internal/config"
 )
+
+func ensureIndexes(db *gorm.DB) {
+	if err := db.Exec("CREATE INDEX IF NOT EXISTS idx_events_created_at ON events (created_at)").Error; err != nil {
+		log.Printf("warning: could not create idx_events_created_at: %v", err)
+	}
+}
 
 // Connect opens a GORM database connection using APP_DATABASE_URL (PostgreSQL URL).
 func Connect(cfg *config.Config) (*gorm.DB, error) {
@@ -46,6 +53,8 @@ func Connect(cfg *config.Config) (*gorm.DB, error) {
 	if err := db.AutoMigrate(&Event{}, &User{}, &APIKey{}, &MetricBucket{}, &RouteBucket{}, &AttributeKeyIndex{}); err != nil {
 		return nil, err
 	}
+
+	ensureIndexes(db)
 
 	return db, nil
 }
