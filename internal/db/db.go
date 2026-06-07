@@ -47,11 +47,6 @@ func Connect(cfg *config.Config) (*gorm.DB, error) {
 		return nil, err
 	}
 
-	// Ensure the created_at-only index exists for queries without a user_id filter (admin view).
-	if err := db.Exec("CREATE INDEX IF NOT EXISTS idx_events_created_at ON events (created_at)").Error; err != nil {
-		return nil, err
-	}
-
 	return db, nil
 }
 
