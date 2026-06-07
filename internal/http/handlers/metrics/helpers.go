@@ -89,8 +89,10 @@ func applyMetricsFilters(q *gorm.DB, status, attrKey, attrValue string) *gorm.DB
 
 func metricFieldExpr(field string) (string, bool) {
 	switch field {
-	case "route", "remote_ip", "method", "path":
+	case "route", "remote_ip", "method":
 		return field, true
+	case "path":
+		return "route", true
 	case "status":
 		return "CAST(status AS TEXT)", true
 	default:

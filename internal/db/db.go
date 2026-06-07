@@ -3,6 +3,7 @@ package db
 import (
 	"errors"
 	"strings"
+	"time"
 
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/driver/postgres"
@@ -31,6 +32,15 @@ func Connect(cfg *config.Config) (*gorm.DB, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	sqlDB, err := db.DB()
+	if err != nil {
+		return nil, err
+	}
+	// Tune connection pool for high throughput with 7.9M+ records.
+	sqlDB.SetMaxOpenConns(50)
+	sqlDB.SetMaxIdleConns(20)
+	sqlDB.SetConnMaxLifetime(30 * time.Minute)
 
 	// Auto-migrate the core tables.
 	if err := db.AutoMigrate(&Event{}, &User{}, &APIKey{}, &MetricBucket{}, &RouteBucket{}, &AttributeKeyIndex{}); err != nil {
