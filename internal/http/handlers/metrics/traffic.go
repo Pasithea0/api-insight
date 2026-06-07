@@ -72,7 +72,7 @@ func TrafficSeries(db *gorm.DB) fiber.Handler {
 			}
 
 			if err := cq.Select("to_char(date_trunc('hour', created_at), 'YYYY-MM-DD\"T\"HH24:MI:SS') || 'Z' as bucket, count(*) as count").
-				Group("date_trunc('hour', created_at)").Scan(&currentHour).Error; err == nil && currentHour.Bucket != "" {
+				Scan(&currentHour).Error; err == nil && currentHour.Bucket != "" {
 				buckets = append(buckets, currentHour)
 			}
 

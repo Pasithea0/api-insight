@@ -1,12 +1,12 @@
 package metrics
 
 import (
-	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
+	"gorm.io/datatypes"
 	"gorm.io/gorm"
 
 	dbpkg "apiinsight/internal/db"
@@ -96,117 +96,102 @@ func queryTopRoutes(db *gorm.DB, params topRoutesQuery) (topRoutesResult, error)
 
 func queryTopRoutesFromBuckets(db *gorm.DB, params topRoutesQuery) (topRoutesResult, error) {
 	bucketCutoff := params.Cutoff.UTC().Truncate(time.Hour)
-	now := time.Now().UTC()
+	limit := params.Limit
+	offset := params.Offset
 
-	// Fetch all route buckets for the completed hours in range
+	// Aggregate route_buckets in SQL — fast GROUP BY on small table
+	countField := "SUM(total_count) as count"
+	errorField := "SUM(error_count) as error_count"
+	if params.Status == "success" {
+		countField = "SUM(total_count - error_count) as count"
+	} else if params.Status == "error" {
+		countField = "SUM(error_count) as count"
+		errorField = "SUM(error_count) as error_count"
+	}
+
+	type bucketAggRow struct {
+		Route      string
+		Count      int64
+		ErrorCount int64 `gorm:"column:error_count"`
+	}
+	var bucketRows []bucketAggRow
 	q := db.Model(&dbpkg.RouteBucket{}).
+		Select("route, "+countField+", "+errorField).
 		Where("user_id = ?", params.OwnerUserID).
 		Where("bucket_start >= ?", bucketCutoff)
 	if params.Project != "" {
 		q = q.Where("project = ?", params.Project)
 	}
-	var buckets []dbpkg.RouteBucket
-	if err := q.Find(&buckets).Error; err != nil {
+	if err := q.Group("route").Order("count DESC").Limit(limit + 1).Offset(offset).Scan(&bucketRows).Error; err != nil {
 		return topRoutesResult{}, err
 	}
 
-	// Aggregate buckets by route in Go
-	type routeAgg struct {
-		totalCount int64
-		errorCount int64
-		durSum     float64
-		statuses   map[int]int64
+	hasMore := len(bucketRows) > limit
+	if hasMore {
+		bucketRows = bucketRows[:limit]
 	}
-	routeMap := make(map[string]*routeAgg)
-	for _, b := range buckets {
-		agg, ok := routeMap[b.Route]
+	if len(bucketRows) == 0 {
+		return topRoutesResult{Routes: []topRoute{}, HasMore: false}, nil
+	}
+
+	// Fetch status_counts for just the top N routes (merge across hours in Go)
+	routeNames := make([]string, len(bucketRows))
+	routeIdx := make(map[string]int, len(bucketRows))
+	for i, r := range bucketRows {
+		routeNames[i] = r.Route
+		routeIdx[r.Route] = i
+	}
+
+	type scBucketRow struct {
+		Route       string
+		StatusCounts datatypes.JSONMap
+	}
+	var scRows []scBucketRow
+	sq := db.Model(&dbpkg.RouteBucket{}).
+		Select("route, status_counts").
+		Where("user_id = ?", params.OwnerUserID).
+		Where("bucket_start >= ?", bucketCutoff).
+		Where("route IN ?", routeNames)
+	if params.Project != "" {
+		sq = sq.Where("project = ?", params.Project)
+	}
+	if err := sq.Find(&scRows).Error; err != nil {
+		return topRoutesResult{}, err
+	}
+
+	type routeMeta struct {
+		route    string
+		count    int64
+		statuses map[int]int64
+	}
+	meta := make([]routeMeta, len(bucketRows))
+	for i, r := range bucketRows {
+		m := routeMeta{route: r.Route, count: r.Count, statuses: make(map[int]int64)}
+		meta[i] = m
+	}
+	for _, sc := range scRows {
+		idx, ok := routeIdx[sc.Route]
 		if !ok {
-			agg = &routeAgg{statuses: make(map[int]int64)}
-			routeMap[b.Route] = agg
+			continue
 		}
-		agg.totalCount += b.TotalCount
-		agg.errorCount += b.ErrorCount
-		agg.durSum += b.AvgDurationMs * float64(b.TotalCount)
-		for k, v := range b.StatusCounts {
+		for k, v := range sc.StatusCounts {
 			if fv, ok := v.(float64); ok {
 				statusInt, _ := strconv.Atoi(k)
 				if statusInt > 0 {
-					agg.statuses[statusInt] += int64(fv)
+					meta[idx].statuses[statusInt] += int64(fv)
 				}
 			}
 		}
 	}
 
-	// Get partial hour data from events if within the current hour
-	lastBucketStart := bucketCutoff
-	for _, b := range buckets {
-		if b.BucketStart.After(lastBucketStart) {
-			lastBucketStart = b.BucketStart
-		}
-	}
-	partialStart := lastBucketStart.Add(time.Hour)
-	if partialStart.Before(params.Cutoff) {
-		partialStart = params.Cutoff
-	}
-	hasPartial := partialStart.Before(now)
-
-	if hasPartial {
-		pq := db.Model(&dbpkg.Event{}).
-			Where("user_id = ?", params.OwnerUserID).
-			Where("created_at >= ?", partialStart)
-		if params.Project != "" {
-			pq = pq.Where("project = ?", params.Project)
-		}
-		if params.Status == "success" {
-			pq = pq.Where("status < 400")
-		} else if params.Status == "error" {
-			pq = pq.Where("status >= 400")
-		}
-
-		type partialRow struct {
-			Route  string
-			Status int
-			Count  int64
-		}
-		var partialRows []partialRow
-		if err := pq.
-			Select("route, status, count(*) as count").
-			Group("route, status").
-			Scan(&partialRows).Error; err != nil {
-			return topRoutesResult{}, err
-		}
-		for _, pr := range partialRows {
-			agg, ok := routeMap[pr.Route]
-			if !ok {
-				agg = &routeAgg{statuses: make(map[int]int64)}
-				routeMap[pr.Route] = agg
-			}
-			agg.totalCount += pr.Count
-			if pr.Status >= 400 {
-				agg.errorCount += pr.Count
-			}
-			agg.statuses[pr.Status] += pr.Count
-		}
-	}
-
-	// Build sorted route list
-	var routeList []struct {
-		route      string
-		totalCount int64
-		errorCount int64
-		statuses   []statusCount
-	}
-	for route, agg := range routeMap {
-		if params.Status == "success" {
-			agg.totalCount = agg.totalCount - agg.errorCount
-		} else if params.Status == "error" {
-			agg.totalCount = agg.errorCount
-		}
-		if agg.totalCount <= 0 {
+	// Build response
+	rows := make([]topRoute, 0, len(meta))
+	for _, m := range meta {
+		if m.count <= 0 {
 			continue
 		}
-		sc := make([]statusCount, 0, len(agg.statuses))
-		for status, count := range agg.statuses {
+		sc := make([]statusCount, 0, len(m.statuses))
+		for status, count := range m.statuses {
 			if params.Status == "success" && status >= 400 {
 				continue
 			}
@@ -215,39 +200,10 @@ func queryTopRoutesFromBuckets(db *gorm.DB, params topRoutesQuery) (topRoutesRes
 			}
 			sc = append(sc, statusCount{Status: status, Count: count})
 		}
-		routeList = append(routeList, struct {
-			route      string
-			totalCount int64
-			errorCount int64
-			statuses   []statusCount
-		}{route: route, totalCount: agg.totalCount, statuses: sc})
-	}
-
-	// Sort by count descending
-	sort.Slice(routeList, func(i, j int) bool {
-		return routeList[i].totalCount > routeList[j].totalCount
-	})
-
-	// Apply offset and limit
-	hasMore := false
-	if params.Offset < len(routeList) {
-		end := params.Offset + params.Limit
-		if end >= len(routeList) {
-			end = len(routeList)
-		} else {
-			hasMore = true
-		}
-		routeList = routeList[params.Offset:end]
-	} else {
-		routeList = nil
-	}
-
-	rows := make([]topRoute, 0, len(routeList))
-	for _, r := range routeList {
 		rows = append(rows, topRoute{
-			Route:    r.route,
-			Count:    r.totalCount,
-			Statuses: r.statuses,
+			Route:    m.route,
+			Count:    m.count,
+			Statuses: sc,
 		})
 	}
 

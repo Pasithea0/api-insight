@@ -80,49 +80,34 @@ func AvgDuration(db *gorm.DB) fiber.Handler {
 
 func avgDurationFromBuckets(db *gorm.DB, userID, project, status string, cutoff time.Time) (float64, error) {
 	bucketCutoff := cutoff.UTC().Truncate(time.Hour)
-	now := time.Now().UTC()
 
-	// Aggregate from route_buckets for completed hours
-	q := db.Model(&dbpkg.RouteBucket{}).
-		Where("user_id = ?", userID).
-		Where("bucket_start >= ?", bucketCutoff)
+	// Use SQL to compute weighted average from route_buckets
+	sb := `SELECT COALESCE(SUM(avg_duration_ms * total_count), 0) / NULLIF(SUM(total_count), 0)`
+	if status == "success" {
+		sb += ` FILTER (WHERE total_count > error_count)`
+	}
+	sb += ` FROM route_buckets WHERE user_id = ? AND bucket_start >= ?`
+	args := []any{userID, bucketCutoff}
 	if project != "" {
-		q = q.Where("project = ?", project)
+		sb += ` AND project = ?`
+		args = append(args, project)
 	}
 
-	var buckets []dbpkg.RouteBucket
-	if err := q.Find(&buckets).Error; err != nil {
+	var bucketAvg float64
+	if err := db.Raw(sb, args...).Scan(&bucketAvg).Error; err != nil {
 		return 0, err
 	}
-
-	var totalDur float64
-	var totalCount int64
-	for _, b := range buckets {
-		count := b.TotalCount
-		if status == "success" {
-			count = b.TotalCount - b.ErrorCount
-		} else if status == "error" {
-			count = b.ErrorCount
-		}
-		if count <= 0 {
-			continue
-		}
-		totalDur += b.AvgDurationMs * float64(b.TotalCount)
-		totalCount += count
+	if bucketAvg < 0 {
+		bucketAvg = 0
 	}
 
-	// Get partial hour data from events
-	lastBucketStart := bucketCutoff
-	for _, b := range buckets {
-		if b.BucketStart.After(lastBucketStart) {
-			lastBucketStart = b.BucketStart
-		}
-	}
-	partialStart := lastBucketStart.Add(time.Hour)
+	// Partial hour from events (at most 1 hour of data)
+	currentHourStart := time.Now().UTC().Truncate(time.Hour)
+	partialStart := currentHourStart
 	if partialStart.Before(cutoff) {
 		partialStart = cutoff
 	}
-	if partialStart.Before(now) {
+	if partialStart.Before(time.Now().UTC()) {
 		pq := db.Model(&dbpkg.Event{}).
 			Where("user_id = ?", userID).
 			Where("created_at >= ?", partialStart)
@@ -144,15 +129,25 @@ func avgDurationFromBuckets(db *gorm.DB, userID, project, status string, cutoff 
 			return 0, err
 		}
 		if partialCount > 0 {
-			totalDur += partialAvg * float64(partialCount)
-			totalCount += partialCount
+			// Get bucket total count for weighted average
+			var bucketTotalCount int64
+			countQ := `SELECT COALESCE(SUM(total_count), 0) FROM route_buckets WHERE user_id = ? AND bucket_start >= ?`
+			countArgs := []any{userID, bucketCutoff}
+			if project != "" {
+				countQ += ` AND project = ?`
+				countArgs = append(countArgs, project)
+			}
+			if err := db.Raw(countQ, countArgs...).Scan(&bucketTotalCount).Error; err != nil {
+				return 0, err
+			}
+			totalCount := bucketTotalCount + partialCount
+			if totalCount > 0 {
+				bucketAvg = (bucketAvg*float64(bucketTotalCount) + partialAvg*float64(partialCount)) / float64(totalCount)
+			}
 		}
 	}
 
-	if totalCount == 0 {
-		return 0, nil
-	}
-	return totalDur / float64(totalCount), nil
+	return bucketAvg, nil
 }
 
 func avgDurationFromEvents(ctx *fiber.Ctx, db *gorm.DB, userID, project, status, attrKey, attrValue string, cutoff time.Time) error {

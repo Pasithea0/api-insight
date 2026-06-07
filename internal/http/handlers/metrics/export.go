@@ -58,10 +58,7 @@ func Export(db *gorm.DB) fiber.Handler {
 
 		switch source {
 		case "recent", "all-events", "search-events":
-			q := db.Model(&dbpkg.Event{}).Where("user_id = ?", userID)
-			if source != "recent" {
-				q = q.Where("created_at >= ?", cutoff)
-			}
+			q := db.Model(&dbpkg.Event{}).Where("user_id = ?", userID).Where("created_at >= ?", cutoff)
 			if project != "" {
 				q = q.Where("project = ?", project)
 			}
