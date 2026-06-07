@@ -215,10 +215,62 @@ func aggregateAttributeKeys(db *gorm.DB, bucketStart, bucketEnd time.Time) error
 	return nil
 }
 
+// backfillRouteBucketStatuses fills in NULL status_counts for existing route_buckets.
+// This is a one-time migration for rows created before the StatusCounts column was added.
+func backfillRouteBucketStatuses(db *gorm.DB) {
+	var nullRows []struct {
+		ID          uint
+		UserID      string
+		Project     string
+		Route       string
+		BucketStart time.Time
+	}
+	if err := db.Model(&RouteBucket{}).
+		Where("status_counts IS NULL").
+		Find(&nullRows).Error; err != nil {
+		log.Printf("backfill: could not find null status_counts: %v", err)
+		return
+	}
+	if len(nullRows) == 0 {
+		return
+	}
+	log.Printf("backfill: filling status_counts for %d route_buckets...", len(nullRows))
+	for _, r := range nullRows {
+		type scRow struct {
+			Status int
+			Count  int64
+		}
+		var scs []scRow
+		if err := db.Model(&Event{}).
+			Select("status, COUNT(*) as count").
+			Where("user_id = ? AND project = ? AND route = ? AND created_at >= ? AND created_at < ?",
+				r.UserID, r.Project, r.Route, r.BucketStart, r.BucketStart.Add(time.Hour)).
+			Group("status").
+			Scan(&scs).Error; err != nil {
+			log.Printf("backfill: error querying for %s/%s/%s: %v", r.UserID, r.Project, r.Route, err)
+			continue
+		}
+		if len(scs) == 0 {
+			continue
+		}
+		m := make(map[string]interface{}, len(scs))
+		for _, s := range scs {
+			m[fmt.Sprint(s.Status)] = s.Count
+		}
+		if err := db.Model(&RouteBucket{}).Where("id = ?", r.ID).
+			Update("status_counts", m).Error; err != nil {
+			log.Printf("backfill: update error for id %d: %v", r.ID, err)
+		}
+	}
+	log.Println("backfill: done")
+}
+
 // StartAggregationWorker runs aggregation for the previous full hour at startup,
 // then every hour. Buckets are in UTC.
 func StartAggregationWorker(db *gorm.DB) {
 	go func() {
+		backfillRouteBucketStatuses(db)
+
 		// Run for the last 24 completed hours at startup.
 		now := time.Now().UTC()
 		for i := 1; i <= 24; i++ {

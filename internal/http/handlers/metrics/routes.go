@@ -184,6 +184,38 @@ func queryTopRoutesFromBuckets(db *gorm.DB, params topRoutesQuery) (topRoutesRes
 		}
 	}
 
+	// Fallback: if any route has no statuses from route_buckets, compute from events
+	var fallbackRoutes []string
+	for _, m := range meta {
+		if len(m.statuses) == 0 && m.count > 0 {
+			fallbackRoutes = append(fallbackRoutes, m.route)
+		}
+	}
+	if len(fallbackRoutes) > 0 {
+		type fsRow struct {
+			Route  string
+			Status int
+			Count  int64
+		}
+		var fsRows []fsRow
+		fq := db.Model(&dbpkg.Event{}).
+			Where("created_at >= ?", params.Cutoff).
+			Where("route IN ?", fallbackRoutes)
+		fq = scopeQueryUserID(fq, params.OwnerUserID)
+		if params.Project != "" {
+			fq = fq.Where("project = ?", params.Project)
+		}
+		if err := fq.Select("route, status, COUNT(*) as count").
+			Group("route, status").Scan(&fsRows).Error; err != nil {
+			return topRoutesResult{}, err
+		}
+		for _, r := range fsRows {
+			if idx, ok := routeIdx[r.Route]; ok {
+				meta[idx].statuses[r.Status] += r.Count
+			}
+		}
+	}
+
 	// Build response
 	rows := make([]topRoute, 0, len(meta))
 	for _, m := range meta {

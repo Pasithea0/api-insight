@@ -12,7 +12,7 @@ import (
 type Event struct {
 	ID uint `gorm:"primaryKey"`
 
-	CreatedAt time.Time `gorm:"index:idx_events_created_at;index:idx_events_user_created_at,priority:2;index:idx_events_user_project_created_at,priority:3;index:idx_events_user_status_created_at,priority:3"`
+	CreatedAt time.Time `gorm:"index:idx_events_user_created_at,priority:2;index:idx_events_user_project_created_at,priority:3;index:idx_events_user_status_created_at,priority:3"`
 
 	// ExpiresAt is the timestamp after which this event is eligible
 	// for deletion by the retention worker. A nil value means the
