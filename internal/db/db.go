@@ -33,7 +33,7 @@ func Connect(cfg *config.Config) (*gorm.DB, error) {
 	}
 
 	// Auto-migrate the core tables.
-	if err := db.AutoMigrate(&Event{}, &User{}, &APIKey{}, &MetricBucket{}); err != nil {
+	if err := db.AutoMigrate(&Event{}, &User{}, &APIKey{}, &MetricBucket{}, &RouteBucket{}, &AttributeKeyIndex{}); err != nil {
 		return nil, err
 	}
 

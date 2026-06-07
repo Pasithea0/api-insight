@@ -52,3 +52,28 @@ type MetricBucket struct {
 	DurationP95Ms int64 `gorm:"not null"` // 95th percentile duration ms
 	DurationP99Ms int64 `gorm:"not null"` // 99th percentile duration ms
 }
+
+// RouteBucket stores pre-aggregated hourly route-level stats per (user, project, route)
+// for fast top-routes and avg-duration queries. Filled by the aggregation worker.
+type RouteBucket struct {
+	ID uint `gorm:"primaryKey"`
+
+	UserID      string    `gorm:"uniqueIndex:idx_route_bucket_unique,priority:1;not null"`
+	Project     string    `gorm:"uniqueIndex:idx_route_bucket_unique,priority:2;not null"`
+	Route       string    `gorm:"uniqueIndex:idx_route_bucket_unique,priority:3;not null"`
+	BucketStart time.Time `gorm:"uniqueIndex:idx_route_bucket_unique,priority:4;not null"`
+
+	TotalCount    int64            `gorm:"not null"`
+	ErrorCount    int64            `gorm:"not null"`
+	AvgDurationMs float64          `gorm:"not null"`
+	StatusCounts  datatypes.JSONMap `gorm:"type:jsonb"`
+}
+
+// AttributeKeyIndex caches distinct attribute keys per (user, project)
+// to avoid expensive jsonb_object_keys scans on the full events table.
+type AttributeKeyIndex struct {
+	ID      uint   `gorm:"primaryKey"`
+	UserID  string `gorm:"uniqueIndex:idx_attr_key_unique,priority:1;not null"`
+	Project string `gorm:"uniqueIndex:idx_attr_key_unique,priority:2;not null"`
+	Key     string `gorm:"uniqueIndex:idx_attr_key_unique,priority:3;not null"`
+}

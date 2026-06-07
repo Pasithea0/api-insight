@@ -60,19 +60,113 @@ func AvgDuration(db *gorm.DB) fiber.Handler {
 		attrKey := ctx.Query("attr_key")
 		attrValue := ctx.Query("attr_value")
 		cutoff, _ := parseRange(ctx)
+		userID := strconv.Itoa(int(user.ID))
 
-		q := db.Model(&dbpkg.Event{}).
-			Where("user_id = ?", strconv.Itoa(int(user.ID))).
-			Where("created_at >= ?", cutoff)
-		if project != "" {
-			q = q.Where("project = ?", project)
-		}
-		q = applyMetricsFilters(q, status, attrKey, attrValue)
+		hasAttrFilter := attrKey != "" && attrValue != ""
 
-		var avgDurationMs float64
-		if err := q.Select("COALESCE(AVG(duration_ms), 0)").Scan(&avgDurationMs).Error; err != nil {
-			return errResponse(ctx, fiber.StatusInternalServerError, "failed to query avg duration")
+		// Fast path: use pre-aggregated RouteBucket data (no attribute filters)
+		if !hasAttrFilter {
+			avgDuration, err := avgDurationFromBuckets(db, userID, project, status, cutoff)
+			if err != nil {
+				return errResponse(ctx, fiber.StatusInternalServerError, "failed to query avg duration")
+			}
+			return jsonResponse(ctx, map[string]any{"avg_duration_ms": avgDuration})
 		}
-		return jsonResponse(ctx, map[string]any{"avg_duration_ms": avgDurationMs})
+
+		// Fallback: compute from raw events
+		return avgDurationFromEvents(ctx, db, userID, project, status, attrKey, attrValue, cutoff)
 	}
+}
+
+func avgDurationFromBuckets(db *gorm.DB, userID, project, status string, cutoff time.Time) (float64, error) {
+	bucketCutoff := cutoff.UTC().Truncate(time.Hour)
+	now := time.Now().UTC()
+
+	// Aggregate from route_buckets for completed hours
+	q := db.Model(&dbpkg.RouteBucket{}).
+		Where("user_id = ?", userID).
+		Where("bucket_start >= ?", bucketCutoff)
+	if project != "" {
+		q = q.Where("project = ?", project)
+	}
+
+	var buckets []dbpkg.RouteBucket
+	if err := q.Find(&buckets).Error; err != nil {
+		return 0, err
+	}
+
+	var totalDur float64
+	var totalCount int64
+	for _, b := range buckets {
+		count := b.TotalCount
+		if status == "success" {
+			count = b.TotalCount - b.ErrorCount
+		} else if status == "error" {
+			count = b.ErrorCount
+		}
+		if count <= 0 {
+			continue
+		}
+		totalDur += b.AvgDurationMs * float64(b.TotalCount)
+		totalCount += count
+	}
+
+	// Get partial hour data from events
+	lastBucketStart := bucketCutoff
+	for _, b := range buckets {
+		if b.BucketStart.After(lastBucketStart) {
+			lastBucketStart = b.BucketStart
+		}
+	}
+	partialStart := lastBucketStart.Add(time.Hour)
+	if partialStart.Before(cutoff) {
+		partialStart = cutoff
+	}
+	if partialStart.Before(now) {
+		pq := db.Model(&dbpkg.Event{}).
+			Where("user_id = ?", userID).
+			Where("created_at >= ?", partialStart)
+		if project != "" {
+			pq = pq.Where("project = ?", project)
+		}
+		if status == "success" {
+			pq = pq.Where("status < 400")
+		} else if status == "error" {
+			pq = pq.Where("status >= 400")
+		}
+
+		var partialAvg float64
+		if err := pq.Select("COALESCE(AVG(duration_ms), 0)").Scan(&partialAvg).Error; err != nil {
+			return 0, err
+		}
+		var partialCount int64
+		if err := pq.Select("COUNT(*)").Scan(&partialCount).Error; err != nil {
+			return 0, err
+		}
+		if partialCount > 0 {
+			totalDur += partialAvg * float64(partialCount)
+			totalCount += partialCount
+		}
+	}
+
+	if totalCount == 0 {
+		return 0, nil
+	}
+	return totalDur / float64(totalCount), nil
+}
+
+func avgDurationFromEvents(ctx *fiber.Ctx, db *gorm.DB, userID, project, status, attrKey, attrValue string, cutoff time.Time) error {
+	q := db.Model(&dbpkg.Event{}).
+		Where("user_id = ?", userID).
+		Where("created_at >= ?", cutoff)
+	if project != "" {
+		q = q.Where("project = ?", project)
+	}
+	q = applyMetricsFilters(q, status, attrKey, attrValue)
+
+	var avgDurationMs float64
+	if err := q.Select("COALESCE(AVG(duration_ms), 0)").Scan(&avgDurationMs).Error; err != nil {
+		return errResponse(ctx, fiber.StatusInternalServerError, "failed to query avg duration")
+	}
+	return jsonResponse(ctx, map[string]any{"avg_duration_ms": avgDurationMs})
 }

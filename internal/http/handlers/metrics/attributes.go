@@ -16,26 +16,33 @@ func AttributeKeys(db *gorm.DB) fiber.Handler {
 		if !ok {
 			return nil
 		}
-		cutoff, _ := parseRange(ctx)
+		project := ctx.Query("project")
+		userID := strconv.Itoa(int(user.ID))
+
+		// Query from cached attribute key index
+		q := db.Model(&dbpkg.AttributeKeyIndex{}).
+			Where("user_id = ?", userID)
+		if project != "" {
+			q = q.Where("project = ?", project)
+		}
 
 		type keyRow struct {
-			Key string `json:"key"`
+			Key string `gorm:"column:key"`
 		}
 		var rows []keyRow
-		// Use jsonb_object_keys which is much faster than jsonb_each for flat maps
-		err := db.Raw(
-			"SELECT DISTINCT jsonb_object_keys(attributes) AS key FROM events WHERE user_id = ? AND created_at >= ?",
-			strconv.Itoa(int(user.ID)), cutoff,
-		).Scan(&rows).Error
-		if err != nil {
+		if err := q.Select("key").Find(&rows).Error; err != nil {
 			return errResponse(ctx, fiber.StatusInternalServerError, "failed to query attribute keys")
 		}
 
+		seen := make(map[string]bool, len(rows)+5)
 		keys := make([]string, 0, len(rows)+5)
-		// Hard-coded searchable fields
-		keys = append(keys, "status", "method", "route", "path", "remote_ip")
+		for _, k := range []string{"status", "method", "route", "path", "remote_ip"} {
+			seen[k] = true
+			keys = append(keys, k)
+		}
 		for _, row := range rows {
-			if row.Key != "" {
+			if row.Key != "" && !seen[row.Key] {
+				seen[row.Key] = true
 				keys = append(keys, row.Key)
 			}
 		}

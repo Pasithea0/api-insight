@@ -1,6 +1,7 @@
 package db
 
 import (
+	"fmt"
 	"log"
 	"time"
 
@@ -8,21 +9,41 @@ import (
 )
 
 // runAggregationOnce aggregates events for the given hour (bucketStart to bucketStart+1h)
-// into MetricBucket rows. Call with bucketStart = time in UTC truncated to hour.
+// into MetricBucket, RouteBucket, and AttributeKeyIndex rows.
+// Call with bucketStart = time in UTC truncated to hour.
 func runAggregationOnce(db *gorm.DB, bucketStart time.Time) error {
 	bucketEnd := bucketStart.Add(time.Hour)
 
-	type aggRow struct {
-		UserID     string
-		Project    string
-		TotalCount int64
-		ErrorCount int64
-		P50        float64
-		P95        float64
-		P99        float64
+	// 1. Aggregate overall metrics into MetricBucket
+	if err := aggregateMetricBuckets(db, bucketStart, bucketEnd); err != nil {
+		return err
 	}
 
-	var rows []aggRow
+	// 2. Aggregate route-level stats into RouteBucket
+	if err := aggregateRouteBuckets(db, bucketStart, bucketEnd); err != nil {
+		return err
+	}
+
+	// 3. Extract attribute keys into AttributeKeyIndex
+	if err := aggregateAttributeKeys(db, bucketStart, bucketEnd); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+type metricAggRow struct {
+	UserID     string
+	Project    string
+	TotalCount int64
+	ErrorCount int64
+	P50        float64
+	P95        float64
+	P99        float64
+}
+
+func aggregateMetricBuckets(db *gorm.DB, bucketStart, bucketEnd time.Time) error {
+	var rows []metricAggRow
 	err := db.Raw(`
 		SELECT 
 			user_id, 
@@ -67,6 +88,128 @@ func runAggregationOnce(db *gorm.DB, bucketStart time.Time) error {
 		}
 		if err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+type routeAggRow struct {
+	UserID      string
+	Project     string
+	Route       string
+	Status      int
+	Count       int64
+	AvgDuration float64
+}
+
+func aggregateRouteBuckets(db *gorm.DB, bucketStart, bucketEnd time.Time) error {
+	var statusRows []routeAggRow
+	err := db.Raw(`
+		SELECT user_id, project, route, status, COUNT(*) as count, AVG(duration_ms) as avg_duration
+		FROM events
+		WHERE created_at >= ? AND created_at < ?
+		GROUP BY user_id, project, route, status
+	`, bucketStart, bucketEnd).Scan(&statusRows).Error
+	if err != nil {
+		return err
+	}
+
+	type routeKey struct {
+		UserID  string
+		Project string
+		Route   string
+	}
+	type routeAccum struct {
+		TotalCount int64
+		ErrorCount int64
+		DurSum     float64
+		StatusCnt  map[string]int64
+	}
+	merged := make(map[routeKey]*routeAccum)
+	for _, r := range statusRows {
+		key := routeKey{UserID: r.UserID, Project: r.Project, Route: r.Route}
+		a, ok := merged[key]
+		if !ok {
+			a = &routeAccum{StatusCnt: make(map[string]int64)}
+			merged[key] = a
+		}
+		a.TotalCount += r.Count
+		if r.Status >= 400 {
+			a.ErrorCount += r.Count
+		}
+		a.DurSum += r.AvgDuration * float64(r.Count)
+		a.StatusCnt[fmt.Sprint(r.Status)] = r.Count
+	}
+
+	for key, a := range merged {
+		avgDur := 0.0
+		if a.TotalCount > 0 {
+			avgDur = a.DurSum / float64(a.TotalCount)
+		}
+		statusJSON := make(map[string]interface{}, len(a.StatusCnt))
+		for k, v := range a.StatusCnt {
+			statusJSON[k] = v
+		}
+
+		row := RouteBucket{
+			UserID:        key.UserID,
+			Project:       key.Project,
+			Route:         key.Route,
+			BucketStart:   bucketStart,
+			TotalCount:    a.TotalCount,
+			ErrorCount:    a.ErrorCount,
+			AvgDurationMs: avgDur,
+			StatusCounts:  statusJSON,
+		}
+
+		var existing RouteBucket
+		err := db.Where("user_id = ? AND project = ? AND route = ? AND bucket_start = ?",
+			key.UserID, key.Project, key.Route, bucketStart).First(&existing).Error
+		if err == gorm.ErrRecordNotFound {
+			err = db.Create(&row).Error
+		} else if err == nil {
+			err = db.Model(&existing).Updates(map[string]interface{}{
+				"total_count":     row.TotalCount,
+				"error_count":     row.ErrorCount,
+				"avg_duration_ms": row.AvgDurationMs,
+				"status_counts":   row.StatusCounts,
+			}).Error
+		}
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func aggregateAttributeKeys(db *gorm.DB, bucketStart, bucketEnd time.Time) error {
+	type attrKeyRow struct {
+		UserID  string
+		Project string
+		Key     string
+	}
+	var rows []attrKeyRow
+	err := db.Raw(`
+		SELECT DISTINCT user_id, project, jsonb_object_keys(attributes) AS key
+		FROM events
+		WHERE created_at >= ? AND created_at < ? AND attributes IS NOT NULL AND attributes != '{}'::jsonb
+	`, bucketStart, bucketEnd).Scan(&rows).Error
+	if err != nil {
+		return err
+	}
+
+	for _, r := range rows {
+		var existing AttributeKeyIndex
+		err := db.Where("user_id = ? AND project = ? AND key = ?", r.UserID, r.Project, r.Key).First(&existing).Error
+		if err == gorm.ErrRecordNotFound {
+			err = db.Create(&AttributeKeyIndex{
+				UserID:  r.UserID,
+				Project: r.Project,
+				Key:     r.Key,
+			}).Error
+			if err != nil {
+				return err
+			}
 		}
 	}
 	return nil

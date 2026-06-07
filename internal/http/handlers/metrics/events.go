@@ -32,6 +32,8 @@ func RecentEvents(db *gorm.DB) fiber.Handler {
 		status := ctx.Query("status")
 		attrKey := ctx.Query("attr_key")
 		attrValue := ctx.Query("attr_value")
+		// Default to last 24h; use a generous range to avoid full table scans
+		cutoff, _ := parseRange(ctx)
 
 		limit := 10
 		if s := ctx.Query("limit"); s != "" {
@@ -49,20 +51,23 @@ func RecentEvents(db *gorm.DB) fiber.Handler {
 			}
 		}
 
-		q := db.Model(&dbpkg.Event{}).Where("user_id = ?", strconv.Itoa(int(user.ID)))
+		q := db.Model(&dbpkg.Event{}).
+			Where("user_id = ?", strconv.Itoa(int(user.ID))).
+			Where("created_at >= ?", cutoff)
 		if project != "" {
 			q = q.Where("project = ?", project)
 		}
 		q = applyMetricsFilters(q, status, attrKey, attrValue)
 
-		var totalCount int64
-		if err := q.Count(&totalCount).Error; err != nil {
-			return errResponse(ctx, fiber.StatusInternalServerError, "failed to count events")
+		// Fetch limit+1 to determine has_more without an expensive COUNT(*)
+		var events []dbpkg.Event
+		if err := q.Order("created_at DESC").Limit(limit + 1).Offset(offset).Find(&events).Error; err != nil {
+			return errResponse(ctx, fiber.StatusInternalServerError, "failed to query recent events")
 		}
 
-		var events []dbpkg.Event
-		if err := q.Order("created_at DESC").Limit(limit).Offset(offset).Find(&events).Error; err != nil {
-			return errResponse(ctx, fiber.StatusInternalServerError, "failed to query recent events")
+		hasMore := len(events) > limit
+		if hasMore {
+			events = events[:limit]
 		}
 
 		timeFormat := "12"
@@ -83,8 +88,7 @@ func RecentEvents(db *gorm.DB) fiber.Handler {
 			})
 		}
 
-		hasMore := offset+limit < int(totalCount)
-		return jsonResponse(ctx, map[string]any{"events": rows, "total": totalCount, "has_more": hasMore})
+		return jsonResponse(ctx, map[string]any{"events": rows, "total": 0, "has_more": hasMore})
 	}
 }
 
@@ -117,21 +121,22 @@ func AllEvents(db *gorm.DB) fiber.Handler {
 		}
 
 		q := db.Model(&dbpkg.Event{}).
-			Where("user_id = ?", strconv.Itoa(int(user.ID))). // Corrected line
+			Where("user_id = ?", strconv.Itoa(int(user.ID))).
 			Where("created_at >= ?", cutoff)
 		if project != "" {
 			q = q.Where("project = ?", project)
 		}
 		q = applyMetricsFilters(q, status, attrKey, attrValue)
 
-		var totalCount int64
-		if err := q.Count(&totalCount).Error; err != nil {
-			return errResponse(ctx, fiber.StatusInternalServerError, "failed to count events")
+		// Fetch limit+1 to determine has_more without an expensive COUNT(*)
+		var events []dbpkg.Event
+		if err := q.Order("created_at DESC").Limit(limit + 1).Offset(offset).Find(&events).Error; err != nil {
+			return errResponse(ctx, fiber.StatusInternalServerError, "failed to query all events")
 		}
 
-		var events []dbpkg.Event
-		if err := q.Order("created_at DESC").Limit(limit).Offset(offset).Find(&events).Error; err != nil {
-			return errResponse(ctx, fiber.StatusInternalServerError, "failed to query all events")
+		hasMore := len(events) > limit
+		if hasMore {
+			events = events[:limit]
 		}
 
 		timeFormat := "12"
@@ -152,8 +157,7 @@ func AllEvents(db *gorm.DB) fiber.Handler {
 			})
 		}
 
-		hasMore := offset+limit < int(totalCount)
-		return jsonResponse(ctx, map[string]any{"events": rows, "total": totalCount, "has_more": hasMore})
+		return jsonResponse(ctx, map[string]any{"events": rows, "total": 0, "has_more": hasMore})
 	}
 }
 
@@ -214,14 +218,15 @@ func SearchEvents(db *gorm.DB) fiber.Handler {
 			q = q.Where("project = ?", project)
 		}
 
-		var totalCount int64
-		if err := q.Count(&totalCount).Error; err != nil {
-			return errResponse(ctx, fiber.StatusInternalServerError, "failed to count search results")
+		// Fetch limit+1 to determine has_more without an expensive COUNT(*)
+		var events []dbpkg.Event
+		if err := q.Order("created_at DESC").Limit(limit + 1).Offset(offset).Find(&events).Error; err != nil {
+			return errResponse(ctx, fiber.StatusInternalServerError, "failed to search events")
 		}
 
-		var events []dbpkg.Event
-		if err := q.Order("created_at DESC").Limit(limit).Offset(offset).Find(&events).Error; err != nil {
-			return errResponse(ctx, fiber.StatusInternalServerError, "failed to search events")
+		hasMore := len(events) > limit
+		if hasMore {
+			events = events[:limit]
 		}
 
 		timeFormat := "12"
@@ -242,7 +247,6 @@ func SearchEvents(db *gorm.DB) fiber.Handler {
 			})
 		}
 
-		hasMore := offset+limit < int(totalCount)
-		return jsonResponse(ctx, map[string]any{"events": rows, "total": totalCount, "has_more": hasMore})
+		return jsonResponse(ctx, map[string]any{"events": rows, "total": 0, "has_more": hasMore})
 	}
 }
