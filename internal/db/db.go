@@ -14,9 +14,26 @@ import (
 )
 
 func ensureIndexes(db *gorm.DB) {
-	if err := db.Exec("CREATE INDEX IF NOT EXISTS idx_events_created_at ON events (created_at)").Error; err != nil {
-		log.Printf("warning: could not create idx_events_created_at: %v", err)
+	var exists bool
+	sqlDB, _ := db.DB()
+	if sqlDB == nil {
+		return
 	}
+	if err := sqlDB.QueryRow("SELECT EXISTS (SELECT 1 FROM pg_indexes WHERE tablename = 'events' AND indexname = 'idx_events_created_at')").Scan(&exists); err != nil {
+		log.Printf("warning: could not check idx_events_created_at: %v", err)
+		return
+	}
+	if exists {
+		return
+	}
+	log.Println("creating idx_events_created_at in background (this may take ~30s, reads proceed normally)...")
+	go func() {
+		if _, err := sqlDB.Exec("CREATE INDEX CONCURRENTLY idx_events_created_at ON events (created_at)"); err != nil {
+			log.Printf("warning: could not create idx_events_created_at: %v", err)
+		} else {
+			log.Println("idx_events_created_at created")
+		}
+	}()
 }
 
 // Connect opens a GORM database connection using APP_DATABASE_URL (PostgreSQL URL).
