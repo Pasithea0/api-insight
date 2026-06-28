@@ -66,6 +66,11 @@ func main() {
 	partialCache := cache.NewPartialHourCache(sqlDB, 30*time.Second)
 	defer partialCache.Stop()
 
+	// Batch writer for async event ingestion.
+	// Buffer 100 batches (up to 5000 events each = 500K events in flight).
+	batchWriter := handlers.NewBatchWriter(sqlDB, 100)
+	defer batchWriter.Stop()
+
 	app := fiber.New(fiber.Config{
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 60 * time.Second,
@@ -148,7 +153,7 @@ func main() {
 	})))
 
 	// Data ingestion
-	app.Post("/v1/events", appmw.BearerAuth(sqlDB)(handlers.IngestHandler(sqlDB, cfg)))
+	app.Post("/v1/events", appmw.BearerAuth(sqlDB)(handlers.IngestHandler(sqlDB, cfg, batchWriter)))
 
 	// Public API routes
 	app.Use("/v1/public", appmw.PublicAPIKeyAuth(sqlDB)(func(c *fiber.Ctx) error {

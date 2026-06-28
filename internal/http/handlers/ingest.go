@@ -58,7 +58,7 @@ type ingestRequest struct {
 	Events []IngestEvent `json:"events"`
 }
 
-func IngestHandler(db *gorm.DB, cfg *config.Config) fiber.Handler {
+func IngestHandler(db *gorm.DB, cfg *config.Config, batchWriter *BatchWriter) fiber.Handler {
 	return func(ctx *fiber.Ctx) error {
 		var payload ingestRequest
 		if err := json.Unmarshal(ctx.Body(), &payload); err != nil {
@@ -145,9 +145,8 @@ func IngestHandler(db *gorm.DB, cfg *config.Config) fiber.Handler {
 			return ctx.Status(fiber.StatusBadRequest).SendString("no valid events after validation")
 		}
 
-		if err := db.Create(&records).Error; err != nil {
-			return ctx.Status(fiber.StatusInternalServerError).SendString("failed to persist events")
-		}
+		// Submit to batch writer — returns instantly, write happens async.
+		batchWriter.Submit(records)
 
 		ctx.Status(fiber.StatusAccepted)
 		ctx.Set("Content-Type", "application/json")
