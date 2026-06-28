@@ -3,7 +3,6 @@ package db
 import (
 	"errors"
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
 
@@ -22,6 +21,15 @@ func Connect(cfg *config.Config) (*gorm.DB, error) {
 	}
 	if !strings.HasPrefix(dsn, "postgres://") && !strings.HasPrefix(dsn, "postgresql://") {
 		return nil, errors.New("APP_DATABASE_URL must be a postgres:// or postgresql:// URL")
+	}
+
+	// Disable TLS if no sslmode is present in DSN.
+	if !strings.Contains(dsn, "sslmode=") {
+		if strings.Contains(dsn, "?") {
+			dsn += "&sslmode=disable"
+		} else {
+			dsn += "?sslmode=disable"
+		}
 	}
 
 	// Inject statement_timeout into DSN options if not already present.
@@ -75,7 +83,7 @@ func injectStatementTimeout(dsn string, ms int) string {
 	if strings.Contains(dsn, opt) || strings.Contains(dsn, "statement_timeout=") {
 		return dsn
 	}
-	param := fmt.Sprintf("options=-c%%20%s", strconv.Quote(opt))
+	param := fmt.Sprintf("options=-c%%20%s", opt)
 	if strings.Contains(dsn, "?") {
 		return dsn + "&" + param
 	}
