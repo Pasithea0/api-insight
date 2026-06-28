@@ -32,6 +32,14 @@ type Config struct {
 
 	// SessionSecret signs dashboard session cookies.
 	SessionSecret string
+
+	// LogLevel sets the minimum logging level: debug, info, warn, error, fatal.
+	// Default: info.
+	LogLevel string
+
+	// PrettyLog enables human-readable console output instead of JSON lines.
+	// Default: false (JSON output).
+	PrettyLog bool
 }
 
 // Load reads configuration from environment variables and applies
@@ -56,6 +64,10 @@ func Load() *Config {
 		if days, err := strconv.Atoi(v); err == nil && days > 0 {
 			cfg.RetentionDays = days
 		}
+	}
+	cfg.LogLevel = strings.TrimSpace(os.Getenv("APP_LOG_LEVEL"))
+	if v := os.Getenv("APP_PRETTY_LOG"); v != "" {
+		cfg.PrettyLog = v == "true" || v == "1" || v == "yes"
 	}
 	cfg.SessionSecret = strings.TrimSpace(os.Getenv("APP_SESSION_SECRET"))
 	if cfg.SessionSecret == "" {

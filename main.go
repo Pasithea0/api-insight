@@ -1,11 +1,15 @@
 package main
 
 import (
-	"log"
+	"context"
+	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/filesystem"
+	"github.com/gofiber/fiber/v2/middleware/requestid"
 	"github.com/joho/godotenv"
 
 	"apiinsight/internal/cache"
@@ -14,6 +18,7 @@ import (
 	"apiinsight/internal/http/handlers"
 	"apiinsight/internal/http/handlers/metrics"
 	appmw "apiinsight/internal/http/middleware"
+	"apiinsight/internal/logger"
 	"apiinsight/web"
 	"net/http"
 )
@@ -22,23 +27,32 @@ func main() {
 	_ = godotenv.Load()
 	cfg := config.Load()
 
+	// Configure structured logging
+	if cfg.LogLevel != "" {
+		logger.SetLevel(cfg.LogLevel)
+	}
+	if cfg.PrettyLog {
+		logger.SetPrettyOutput(os.Stderr)
+	}
+	zlog := logger.Log
+
 	sqlDB, err := db.Connect(cfg)
 	if err != nil {
-		log.Fatalf("failed to connect database: %v", err)
+		zlog.Fatal().Err(err).Msg("failed to connect database")
 	}
 
 	db.StartRetentionWorker(sqlDB)
 	db.StartAggregationWorker(sqlDB)
 
 	if err := db.EnsureBootstrapAdmin(sqlDB, cfg); err != nil {
-		log.Fatalf("failed to ensure bootstrap admin: %v", err)
+		zlog.Fatal().Err(err).Msg("failed to ensure bootstrap admin")
 	}
 
 	if cfg.InternalAPIKey != "" {
 		if err := db.EnsureBootstrapAPIKey(sqlDB, cfg); err != nil {
-			log.Printf("warning: failed to ensure bootstrap API key: %v (will be created on first settings page load)", err)
+			zlog.Warn().Err(err).Msg("failed to ensure bootstrap API key (will be created on first settings page load)")
 		} else {
-			log.Printf("internal API key configured and associated with admin user")
+			zlog.Info().Msg("internal API key configured and associated with admin user")
 		}
 	}
 
@@ -50,9 +64,28 @@ func main() {
 	defer partialCache.Stop()
 
 	app := fiber.New(fiber.Config{
-		// Prevent slow queries from keeping connections open indefinitely.
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 60 * time.Second,
+	})
+
+	// Request ID middleware for tracing requests through logs.
+	app.Use(requestid.New(requestid.Config{
+		ContextKey: "request_id",
+	}))
+
+	// Structured request logging middleware.
+	app.Use(func(c *fiber.Ctx) error {
+		start := time.Now()
+		err := c.Next()
+		dur := time.Since(start)
+		zlog.Info().
+			Str("method", c.Method()).
+			Str("path", c.Path()).
+			Int("status", c.Response().StatusCode()).
+			Dur("duration", dur).
+			Str("request_id", c.Locals("request_id").(string)).
+			Msg("request")
+		return err
 	})
 
 	internalURL := "http://localhost" + cfg.ListenAddr + "/v1/events"
@@ -63,7 +96,6 @@ func main() {
 	app.Use(appmw.InternalReporting(cfg, internalURL))
 
 	app.Get("/healthz", func(c *fiber.Ctx) error {
-		// Deep health check: verify DB connectivity
 		sqlDB, err := sqlDB.DB()
 		if err != nil {
 			return c.Status(fiber.StatusServiceUnavailable).SendString("db error")
@@ -137,8 +169,26 @@ func main() {
 	app.Get("/v1/metrics/export", adminAuth(metrics.Export(sqlDB)))
 	app.Get("/v1/metrics/event/:id", adminAuth(handlers.EventDetail(sqlDB)))
 
-	log.Printf("apiinsight listening on %s", cfg.ListenAddr)
-	if err := app.Listen(cfg.ListenAddr); err != nil {
-		log.Fatalf("server error: %v", err)
+	// Graceful shutdown
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+
+	go func() {
+		zlog.Info().Str("addr", cfg.ListenAddr).Msg("apiinsight listening")
+		if err := app.Listen(cfg.ListenAddr); err != nil {
+			zlog.Fatal().Err(err).Msg("server error")
+		}
+	}()
+
+	<-quit
+	zlog.Info().Msg("shutting down gracefully...")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if err := app.ShutdownWithContext(ctx); err != nil {
+		zlog.Error().Err(err).Msg("shutdown error")
 	}
+
+	zlog.Info().Msg("server stopped")
 }
