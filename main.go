@@ -2,11 +2,13 @@ package main
 
 import (
 	"log"
+	"time"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/filesystem"
 	"github.com/joho/godotenv"
 
+	"apiinsight/internal/cache"
 	"apiinsight/internal/config"
 	"apiinsight/internal/db"
 	"apiinsight/internal/http/handlers"
@@ -42,7 +44,16 @@ func main() {
 
 	handlers.InitPrometheusMetrics()
 
-	app := fiber.New()
+	// Start partial-hour cache (refreshes every 30s to eliminate raw-events
+	// queries for the current incomplete hour on every dashboard load).
+	partialCache := cache.NewPartialHourCache(sqlDB, 30*time.Second)
+	defer partialCache.Stop()
+
+	app := fiber.New(fiber.Config{
+		// Prevent slow queries from keeping connections open indefinitely.
+		ReadTimeout:  10 * time.Second,
+		WriteTimeout: 60 * time.Second,
+	})
 
 	internalURL := "http://localhost" + cfg.ListenAddr + "/v1/events"
 	if cfg.ListenAddr != "" && cfg.ListenAddr[0] != ':' {
@@ -52,6 +63,14 @@ func main() {
 	app.Use(appmw.InternalReporting(cfg, internalURL))
 
 	app.Get("/healthz", func(c *fiber.Ctx) error {
+		// Deep health check: verify DB connectivity
+		sqlDB, err := sqlDB.DB()
+		if err != nil {
+			return c.Status(fiber.StatusServiceUnavailable).SendString("db error")
+		}
+		if err := sqlDB.Ping(); err != nil {
+			return c.Status(fiber.StatusServiceUnavailable).SendString("db unreachable")
+		}
 		return c.SendString("ok")
 	})
 
@@ -65,19 +84,24 @@ func main() {
 
 	adminAuth := appmw.AdminAuth(sqlDB, cfg)
 	requireAdmin := appmw.RequireAdmin(cfg)
+
+	// Dashboard pages
 	app.Get("/", adminAuth(handlers.Dashboard(sqlDB, cfg)))
 	app.Get("/metrics", adminAuth(handlers.MetricsPage(sqlDB, cfg)))
 	app.Get("/docs", adminAuth(handlers.DocsPage(sqlDB, cfg)))
 	app.Get("/settings", adminAuth(handlers.SettingsPage(sqlDB, cfg)))
 	app.Get("/users", adminAuth(handlers.UsersPage(sqlDB, cfg)))
 
+	// Admin user management
 	app.Post("/admin/users/create", adminAuth(requireAdmin(handlers.CreateUser(sqlDB, cfg))))
 	app.Post("/admin/users/:id/reset-password", adminAuth(requireAdmin(handlers.ResetPassword(sqlDB, cfg))))
 	app.Post("/admin/users/:id/delete", adminAuth(requireAdmin(handlers.DeleteUser(sqlDB, cfg))))
 
+	// Settings
 	app.Post("/settings/password", adminAuth(handlers.ChangePasswordSelf(sqlDB, cfg)))
 	app.Post("/settings/display", adminAuth(handlers.UpdateDisplaySettings(sqlDB, cfg)))
 
+	// API key management
 	app.Post("/admin/apikeys/create", adminAuth(handlers.CreateAPIKey(sqlDB, cfg)))
 	app.Post("/admin/apikeys/delete", adminAuth(handlers.DeleteAPIKey(sqlDB, cfg)))
 	app.Post("/admin/apikeys/set-active", adminAuth(handlers.SetActiveAPIKey(sqlDB, cfg)))
@@ -88,12 +112,16 @@ func main() {
 		return c.SendString("admin ok")
 	})))
 
+	// Data ingestion
 	app.Post("/v1/events", appmw.BearerAuth(sqlDB)(handlers.IngestHandler(sqlDB, cfg)))
+
+	// Public API routes
 	app.Use("/v1/public", appmw.PublicAPIKeyAuth(sqlDB)(func(c *fiber.Ctx) error {
 		return c.Next()
 	}))
 
-	app.Get("/v1/metrics/traffic", adminAuth(metrics.TrafficSeries(sqlDB)))
+	// Metrics API — pass cache for partial-hour optimization
+	app.Get("/v1/metrics/traffic", adminAuth(metrics.TrafficSeries(sqlDB, partialCache)))
 	app.Get("/v1/metrics/error-rate", adminAuth(metrics.ErrorRateSeries(sqlDB)))
 	app.Get("/v1/metrics/latency-percentiles", adminAuth(metrics.LatencyPercentilesSeries(sqlDB)))
 	app.Get("/v1/metrics/avg-duration", adminAuth(metrics.AvgDuration(sqlDB)))

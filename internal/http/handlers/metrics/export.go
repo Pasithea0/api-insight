@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"sort"
 	"strconv"
 	"time"
 
@@ -167,15 +166,16 @@ func Export(db *gorm.DB) fiber.Handler {
 
 func exportTopRoutesFromBuckets(db *gorm.DB, userID, project, status string, cutoff time.Time, limit, offset int) ([]topRoute, error) {
 	bucketCutoff := cutoff.UTC().Truncate(time.Hour)
-	now := time.Now().UTC()
 
-	type routeAgg struct {
-		totalCount int64
-		errorCount int64
+	// Use SQL GROUP BY instead of loading all buckets into Go memory
+	type routeAggRow struct {
+		Route      string
+		Count      int64
+		ErrorCount int64
 	}
-	routeMap := make(map[string]*routeAgg)
-
+	var rows []routeAggRow
 	q := db.Model(&dbpkg.RouteBucket{}).
+		Select("route, SUM(total_count) as count, SUM(error_count) as error_count").
 		Where("bucket_start >= ?", bucketCutoff)
 	if userID != "" {
 		q = q.Where("user_id = ?", userID)
@@ -183,94 +183,29 @@ func exportTopRoutesFromBuckets(db *gorm.DB, userID, project, status string, cut
 	if project != "" {
 		q = q.Where("project = ?", project)
 	}
-	var buckets []dbpkg.RouteBucket
-	if err := q.Find(&buckets).Error; err != nil {
+
+	countField := "SUM(total_count) as count"
+	if status == "success" {
+		countField = "SUM(total_count - error_count) as count"
+	} else if status == "error" {
+		countField = "SUM(error_count) as count"
+	}
+	q = db.Model(&dbpkg.RouteBucket{}).
+		Select("route, " + countField).
+		Where("bucket_start >= ?", bucketCutoff)
+	if userID != "" {
+		q = q.Where("user_id = ?", userID)
+	}
+	if project != "" {
+		q = q.Where("project = ?", project)
+	}
+	if err := q.Group("route").Order("count DESC").Limit(limit).Offset(offset).Scan(&rows).Error; err != nil {
 		return nil, err
 	}
-	for _, b := range buckets {
-		agg, ok := routeMap[b.Route]
-		if !ok {
-			agg = &routeAgg{}
-			routeMap[b.Route] = agg
-		}
-		agg.totalCount += b.TotalCount
-		agg.errorCount += b.ErrorCount
-	}
 
-	// Partial hour
-	lastBucketStart := bucketCutoff
-	for _, b := range buckets {
-		if b.BucketStart.After(lastBucketStart) {
-			lastBucketStart = b.BucketStart
-		}
-	}
-	partialStart := lastBucketStart.Add(time.Hour)
-	if partialStart.Before(cutoff) {
-		partialStart = cutoff
-	}
-	if partialStart.Before(now) {
-		pq := db.Model(&dbpkg.Event{}).
-			Where("created_at >= ?", partialStart)
-		if userID != "" {
-			pq = pq.Where("user_id = ?", userID)
-		}
-		if project != "" {
-			pq = pq.Where("project = ?", project)
-		}
-		if status == "success" {
-			pq = pq.Where("status < 400")
-		} else if status == "error" {
-			pq = pq.Where("status >= 400")
-		}
-
-		type pr struct {
-			Route string
-			Count int64
-		}
-		var partialRows []pr
-		if err := pq.Select("route, count(*) as count").Group("route").Scan(&partialRows).Error; err != nil {
-			return nil, err
-		}
-		for _, pr := range partialRows {
-			agg, ok := routeMap[pr.Route]
-			if !ok {
-				agg = &routeAgg{}
-				routeMap[pr.Route] = agg
-			}
-			agg.totalCount += pr.Count
-		}
-	}
-
-	type routeEntry struct {
-		route string
-		count int64
-	}
-	var list []routeEntry
-	for route, agg := range routeMap {
-		c := agg.totalCount
-		if status == "success" {
-			c = agg.totalCount - agg.errorCount
-		} else if status == "error" {
-			c = agg.errorCount
-		}
-		if c > 0 {
-			list = append(list, routeEntry{route, c})
-		}
-	}
-	sort.Slice(list, func(i, j int) bool { return list[i].count > list[j].count })
-
-	if offset >= len(list) {
-		return nil, nil
-	}
-	end := offset + limit
-	if end > len(list) {
-		end = len(list)
-	}
-	list = list[offset:end]
-
-	result := make([]topRoute, 0, len(list))
-	for _, e := range list {
-		result = append(result, topRoute{Route: e.route, Count: e.count})
+	result := make([]topRoute, 0, len(rows))
+	for _, r := range rows {
+		result = append(result, topRoute{Route: r.Route, Count: r.Count})
 	}
 	return result, nil
 }
