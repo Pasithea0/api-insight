@@ -11,7 +11,7 @@ import (
 // deleting any events whose ExpiresAt is in the past in batches.
 func runRetentionOnce(db *gorm.DB) error {
 	now := time.Now()
-	batchSize := 20000
+	batchSize := 50000
 
 	for {
 		result := db.Exec(`
@@ -30,6 +30,12 @@ func runRetentionOnce(db *gorm.DB) error {
 		if result.RowsAffected == 0 {
 			break
 		}
+	}
+
+	// Refresh table statistics after mass deletes so the query planner
+	// doesn't use stale row counts.
+	if err := db.Exec("ANALYZE events").Error; err != nil {
+		log.Printf("retention: warning: could not ANALYZE events after cleanup: %v", err)
 	}
 
 	return nil

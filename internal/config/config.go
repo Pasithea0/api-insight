@@ -15,6 +15,10 @@ type Config struct {
 
 	DatabaseURL string
 
+	// StatementTimeoutMs sets the maximum execution time for any SQL statement.
+	// 0 (default) means no timeout. Recommended: 30000 (30s).
+	StatementTimeoutMs int
+
 	// RetentionDays is the maximum retention (in days) that any individual
 	// API key is allowed to request. Per-key settings will be clamped to
 	// this value.
@@ -33,12 +37,19 @@ type Config struct {
 // Load reads configuration from environment variables and applies
 func Load() *Config {
 	cfg := &Config{
-		AdminUser:      getenv("APP_ADMIN_USER", "admin"),
-		AdminPassword:  getenv("APP_ADMIN_PASSWORD", "changeme"),
-		DatabaseURL:    os.Getenv("APP_DATABASE_URL"),
-		ListenAddr:     getenv("APP_LISTEN_ADDR", ":8080"),
-		RetentionDays:  30,
-		InternalAPIKey: getenv("APP_INTERNAL_API_KEY", ""),
+		AdminUser:          getenv("APP_ADMIN_USER", "admin"),
+		AdminPassword:      getenv("APP_ADMIN_PASSWORD", "changeme"),
+		DatabaseURL:        os.Getenv("APP_DATABASE_URL"),
+		ListenAddr:         getenv("APP_LISTEN_ADDR", ":8080"),
+		RetentionDays:      30,
+		InternalAPIKey:     getenv("APP_INTERNAL_API_KEY", ""),
+		StatementTimeoutMs: 30000,
+	}
+
+	if v := os.Getenv("APP_STATEMENT_TIMEOUT_MS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			cfg.StatementTimeoutMs = n
+		}
 	}
 
 	if v := os.Getenv("APP_RETENTION_DAYS"); v != "" {

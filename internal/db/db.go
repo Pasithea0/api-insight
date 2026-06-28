@@ -2,6 +2,8 @@ package db
 
 import (
 	"errors"
+	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -22,12 +24,18 @@ func Connect(cfg *config.Config) (*gorm.DB, error) {
 		return nil, errors.New("APP_DATABASE_URL must be a postgres:// or postgresql:// URL")
 	}
 
+	// Inject statement_timeout into DSN options if not already present.
+	dsn = injectStatementTimeout(dsn, cfg.StatementTimeoutMs)
+
 	// PrepareStmt: true prevents the GORM postgres migrator from forcing simple protocol
 	// for "SELECT * FROM table LIMIT 1", which would otherwise trigger "insufficient arguments".
-	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{
+	db, err := gorm.Open(postgres.New(postgres.Config{
+		DSN:                  dsn,
+		PreferSimpleProtocol: false,
+	}), &gorm.Config{
 		PrepareStmt: true,
 		// Batch multiple inserts into a single query to reduce round-trips and improve performance.
-		CreateBatchSize: 100,
+		CreateBatchSize: 500,
 	})
 	if err != nil {
 		return nil, err
@@ -37,17 +45,41 @@ func Connect(cfg *config.Config) (*gorm.DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Tune connection pool for high throughput with 7.9M+ records.
-	sqlDB.SetMaxOpenConns(50)
-	sqlDB.SetMaxIdleConns(20)
+	// Tune connection pool for high throughput with 10M+ records per day.
+	sqlDB.SetMaxOpenConns(100)
+	sqlDB.SetMaxIdleConns(50)
 	sqlDB.SetConnMaxLifetime(30 * time.Minute)
+	sqlDB.SetConnMaxIdleTime(5 * time.Minute)
 
 	// Auto-migrate the core tables.
-	if err := db.AutoMigrate(&Event{}, &User{}, &APIKey{}, &MetricBucket{}, &RouteBucket{}, &AttributeKeyIndex{}); err != nil {
+	if err := db.AutoMigrate(
+		&Event{}, &User{}, &APIKey{},
+		&MetricBucket{}, &RouteBucket{}, &DailyMetricBucket{}, &AttributeKeyIndex{},
+	); err != nil {
 		return nil, err
 	}
 
+	// Apply schema migrations (indexes, autovacuum tuning) after AutoMigrate.
+	runMigrations(db)
+
 	return db, nil
+}
+
+// injectStatementTimeout appends options=-c%20statement_timeout=<ms> to the
+// PostgreSQL DSN if no such option is already present and the value is > 0.
+func injectStatementTimeout(dsn string, ms int) string {
+	if ms <= 0 {
+		return dsn
+	}
+	opt := fmt.Sprintf("statement_timeout=%d", ms)
+	if strings.Contains(dsn, opt) || strings.Contains(dsn, "statement_timeout=") {
+		return dsn
+	}
+	param := fmt.Sprintf("options=-c%%20%s", strconv.Quote(opt))
+	if strings.Contains(dsn, "?") {
+		return dsn + "&" + param
+	}
+	return dsn + "?" + param
 }
 
 // EnsureBootstrapAdmin makes sure there is at least one admin user

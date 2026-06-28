@@ -29,6 +29,17 @@ func runAggregationOnce(db *gorm.DB, bucketStart time.Time) error {
 		return err
 	}
 
+	// 4. Upsert daily buckets after the day is complete (bucket lands on a new UTC day boundary)
+	if bucketStart.Hour() == 23 {
+		dayStart := bucketStart.Truncate(24 * time.Hour)
+		if err := aggregateDailyMetrics(db, dayStart); err != nil {
+			return err
+		}
+		if err := aggregateDailyRoutes(db, dayStart); err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
 
@@ -270,6 +281,7 @@ func backfillRouteBucketStatuses(db *gorm.DB) {
 func StartAggregationWorker(db *gorm.DB) {
 	go func() {
 		backfillRouteBucketStatuses(db)
+		backfillDailyBuckets(db)
 
 		// Run for the last 24 completed hours at startup.
 		now := time.Now().UTC()
@@ -289,4 +301,207 @@ func StartAggregationWorker(db *gorm.DB) {
 			}
 		}
 	}()
+}
+
+// aggregateDailyMetrics rolls up all MetricBucket rows for a given UTC day
+// into a single DailyMetricBucket row, using an upsert pattern.
+func aggregateDailyMetrics(db *gorm.DB, dayStart time.Time) error {
+	dayEnd := dayStart.Add(24 * time.Hour)
+
+	type dailyRow struct {
+		UserID      string
+		Project     string
+		TotalCount  int64
+		ErrorCount  int64
+		// Weighted average of percentiles, weighted by total_count
+		P50Sum float64
+		P95Sum float64
+		P99Sum float64
+		Count  int64
+	}
+
+	var rows []dailyRow
+	if err := db.Raw(`
+		SELECT
+			user_id, project,
+			SUM(total_count) AS total_count,
+			SUM(error_count) AS error_count,
+			SUM(duration_p50_ms * total_count) AS p50_sum,
+			SUM(duration_p95_ms * total_count) AS p95_sum,
+			SUM(duration_p99_ms * total_count) AS p99_sum,
+			SUM(total_count) AS count
+		FROM metric_buckets
+		WHERE bucket_start >= ? AND bucket_start < ?
+		GROUP BY user_id, project
+	`, dayStart, dayEnd).Scan(&rows).Error; err != nil {
+		return err
+	}
+
+	for _, r := range rows {
+		var avgP50, avgP95, avgP99 int64
+		if r.Count > 0 {
+			avgP50 = int64(r.P50Sum / float64(r.Count))
+			avgP95 = int64(r.P95Sum / float64(r.Count))
+			avgP99 = int64(r.P99Sum / float64(r.Count))
+		}
+
+		row := DailyMetricBucket{
+			UserID:        r.UserID,
+			Project:       r.Project,
+			BucketDate:    dayStart,
+			TotalCount:    r.TotalCount,
+			ErrorCount:    r.ErrorCount,
+			DurationP50Ms: avgP50,
+			DurationP95Ms: avgP95,
+			DurationP99Ms: avgP99,
+		}
+
+		var existing DailyMetricBucket
+		err := db.Where("user_id = ? AND project = ? AND bucket_date = ?", r.UserID, r.Project, dayStart).First(&existing).Error
+		if err == gorm.ErrRecordNotFound {
+			err = db.Create(&row).Error
+		} else if err == nil {
+			err = db.Model(&existing).Updates(map[string]interface{}{
+				"total_count":     row.TotalCount,
+				"error_count":     row.ErrorCount,
+				"duration_p50_ms": row.DurationP50Ms,
+				"duration_p95_ms": row.DurationP95Ms,
+				"duration_p99_ms": row.DurationP99Ms,
+			}).Error
+		}
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// aggregateDailyRoutes rolls up all RouteBucket rows for a given UTC day
+// into a single DailyRouteBucket row per (user, project, route).
+func aggregateDailyRoutes(db *gorm.DB, dayStart time.Time) error {
+	dayEnd := dayStart.Add(24 * time.Hour)
+
+	type dailyRow struct {
+		UserID      string
+		Project     string
+		Route       string
+		TotalCount  int64
+		ErrorCount  int64
+		DurSum      float64
+		Count       int64
+		StatusJSON  string
+	}
+
+	var rows []dailyRow
+	if err := db.Raw(`
+		SELECT
+			user_id, project, route,
+			SUM(total_count) AS total_count,
+			SUM(error_count) AS error_count,
+			SUM(avg_duration_ms * total_count) AS dur_sum,
+			SUM(total_count) AS count
+		FROM route_buckets
+		WHERE bucket_start >= ? AND bucket_start < ?
+		GROUP BY user_id, project, route
+	`, dayStart, dayEnd).Scan(&rows).Error; err != nil {
+		return err
+	}
+
+	for _, r := range rows {
+		avgDur := 0.0
+		if r.Count > 0 {
+			avgDur = r.DurSum / float64(r.Count)
+		}
+
+		// Compute status counts directly from events for the day
+		// (more reliable than merging hourly JSON blobs)
+		type scRow struct {
+			Status int
+			Count  int64
+		}
+		var daySCs []scRow
+		if err := db.Model(&Event{}).
+			Select("status, COUNT(*) AS count").
+			Where("user_id = ? AND project = ? AND route = ? AND created_at >= ? AND created_at < ?",
+				r.UserID, r.Project, r.Route, dayStart, dayEnd).
+			Group("status").
+			Scan(&daySCs).Error; err != nil {
+			return err
+		}
+		statusJSON := make(map[string]interface{}, len(daySCs))
+		for _, sc := range daySCs {
+			statusJSON[fmt.Sprint(sc.Status)] = sc.Count
+		}
+
+		row := DailyRouteBucket{
+			UserID:        r.UserID,
+			Project:       r.Project,
+			Route:         r.Route,
+			BucketDate:    dayStart,
+			TotalCount:    r.TotalCount,
+			ErrorCount:    r.ErrorCount,
+			AvgDurationMs: avgDur,
+			StatusCounts:  statusJSON,
+		}
+
+		var existing DailyRouteBucket
+		err := db.Where("user_id = ? AND project = ? AND route = ? AND bucket_date = ?",
+			r.UserID, r.Project, r.Route, dayStart).First(&existing).Error
+		if err == gorm.ErrRecordNotFound {
+			err = db.Create(&row).Error
+		} else if err == nil {
+			err = db.Model(&existing).Updates(map[string]interface{}{
+				"total_count":     row.TotalCount,
+				"error_count":     row.ErrorCount,
+				"avg_duration_ms": row.AvgDurationMs,
+				"status_counts":   row.StatusCounts,
+			}).Error
+		}
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// backfillDailyBuckets computes DailyMetricBucket and DailyRouteBucket rows for
+// all prior days that don't yet have them, by rolling up existing hourly buckets.
+func backfillDailyBuckets(db *gorm.DB) {
+	now := time.Now().UTC()
+	// Find the earliest hour bucket that exists
+	var earliest MetricBucket
+	if err := db.Order("bucket_start ASC").Limit(1).Find(&earliest).Error; err != nil || earliest.ID == 0 {
+		log.Println("backfill daily: no hourly buckets found (nothing to backfill)")
+		return
+	}
+
+	dayStart := earliest.BucketStart.Truncate(24 * time.Hour)
+	todayStart := now.Truncate(24 * time.Hour)
+	count := 0
+
+	for dayStart.Before(todayStart) {
+		var existing DailyMetricBucket
+		err := db.Where("bucket_date = ?", dayStart).First(&existing).Error
+		if err == gorm.ErrRecordNotFound {
+			// Check if we have complete data for this day (all 24 hours)
+			var hourCount int64
+			db.Model(&MetricBucket{}).Where("bucket_start >= ? AND bucket_start < ?",
+				dayStart, dayStart.Add(24*time.Hour)).Distinct("bucket_start").Count(&hourCount)
+			if hourCount > 0 {
+				if err := aggregateDailyMetrics(db, dayStart); err != nil {
+					log.Printf("backfill daily metrics for %s: %v", dayStart.Format("2006-01-02"), err)
+				}
+				if err := aggregateDailyRoutes(db, dayStart); err != nil {
+					log.Printf("backfill daily routes for %s: %v", dayStart.Format("2006-01-02"), err)
+				}
+				count++
+			}
+		}
+		dayStart = dayStart.Add(24 * time.Hour)
+	}
+	if count > 0 {
+		log.Printf("backfill daily: populated %d missing day(s)", count)
+	} else {
+		log.Println("backfill daily: all days up to date")
+	}
 }
