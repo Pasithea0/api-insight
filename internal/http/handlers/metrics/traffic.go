@@ -41,13 +41,13 @@ func TrafficSeries(db *gorm.DB, phCache *cache.PartialHourCache) fiber.Handler {
 			}
 
 			var selectExpr string
-			if status == "success" {
-				selectExpr = "to_char(bucket_start, 'YYYY-MM-DD\\\"T\\\"HH24:MI:SS') || 'Z' as bucket, sum(total_count - error_count) as count"
-			} else if status == "error" {
-				selectExpr = "to_char(bucket_start, 'YYYY-MM-DD\\\"T\\\"HH24:MI:SS') || 'Z' as bucket, sum(error_count) as count"
-			} else {
-				selectExpr = "to_char(bucket_start, 'YYYY-MM-DD\\\"T\\\"HH24:MI:SS') || 'Z' as bucket, sum(total_count) as count"
-			}
+				if status == "success" {
+					selectExpr = "to_char(bucket_start, 'YYYY-MM-DD\"T\"HH24:MI:SS') || 'Z' as bucket, sum(total_count - error_count) as count"
+				} else if status == "error" {
+					selectExpr = "to_char(bucket_start, 'YYYY-MM-DD\"T\"HH24:MI:SS') || 'Z' as bucket, sum(error_count) as count"
+				} else {
+					selectExpr = "to_char(bucket_start, 'YYYY-MM-DD\"T\"HH24:MI:SS') || 'Z' as bucket, sum(total_count) as count"
+				}
 
 			if err := q.Select(selectExpr).Group("bucket_start").Order("bucket_start").Scan(&buckets).Error; err != nil {
 				return errResponse(ctx, fiber.StatusInternalServerError, "failed to query bucket metrics")
@@ -100,7 +100,7 @@ func TrafficSeries(db *gorm.DB, phCache *cache.PartialHourCache) fiber.Handler {
 					cq = cq.Where("status >= 400")
 				}
 
-				if err := cq.Select("to_char(date_trunc('hour', created_at), 'YYYY-MM-DD\\\"T\\\"HH24:MI:SS') || 'Z' as bucket, count(*) as count").
+				if err := cq.Select("to_char(date_trunc('hour', created_at), 'YYYY-MM-DD\"T\"HH24:MI:SS') || 'Z' as bucket, count(*) as count").
 					Scan(&currentHour).Error; err == nil && currentHour.Bucket != "" {
 					buckets = append(buckets, currentHour)
 				}

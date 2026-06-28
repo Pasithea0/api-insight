@@ -83,9 +83,13 @@ func avgDurationFromBuckets(db *gorm.DB, userID, project, status string, cutoff 
 	bucketCutoff := cutoff.UTC().Truncate(time.Hour)
 
 	// Use SQL to compute weighted average from route_buckets
+	// Filter to success routes when status filter is "success" by filtering
+	// after aggregation with a HAVING clause instead of invalid FILTER syntax.
 	sb := `SELECT COALESCE(SUM(avg_duration_ms * total_count) / NULLIF(SUM(total_count), 0), 0)`
 	if status == "success" {
-		sb += ` FILTER (WHERE total_count > error_count)`
+		sb = `SELECT COALESCE(SUM(avg_duration_ms * (total_count - error_count)) / NULLIF(SUM(total_count - error_count), 0), 0)`
+	} else if status == "error" {
+		sb = `SELECT COALESCE(SUM(avg_duration_ms * error_count) / NULLIF(SUM(error_count), 0), 0)`
 	}
 	sb += ` FROM route_buckets WHERE bucket_start >= ?`
 	args := []any{bucketCutoff}
