@@ -6,31 +6,59 @@ import (
 	"gorm.io/gorm"
 )
 
-// desiredIndexes lists indexes we want on the events table.
-// Using CONCURRENTLY to avoid locking the table on production datasets.
-var desiredIndexes = []struct {
+// indexTarget groups an index definition with the table it belongs to.
+type indexTarget struct {
 	Name   string
+	Table  string
 	Column string
 	Unique bool
-}{
-	{Name: "idx_events_created_at", Column: "(created_at)"},
-	{Name: "idx_events_user_project_created_desc", Column: "(user_id, project, created_at DESC)"},
-	{Name: "idx_events_user_project_route", Column: "(user_id, project, route)"},
-	{Name: "idx_events_user_project_route_created", Column: "(user_id, project, route, created_at)"},
-	{Name: "idx_metric_buckets_bucket_start", Column: "(bucket_start)"},
-	{Name: "idx_route_buckets_bucket_start", Column: "(bucket_start)"},
+}
+
+// desiredIndexes lists all indexes we want to create across all tables.
+var desiredIndexes = []indexTarget{
+	// Events table — created CONCURRENTLY to avoid production locks
+	{Name: "idx_events_created_at", Table: "events", Column: "(created_at)"},
+	{Name: "idx_events_user_project_created_desc", Table: "events", Column: "(user_id, project, created_at DESC)"},
+	{Name: "idx_events_user_project_route", Table: "events", Column: "(user_id, project, route)"},
+	{Name: "idx_events_user_project_route_created", Table: "events", Column: "(user_id, project, route, created_at)"},
+
+	// Metric bucket table — small, safe to create in-transaction
+	{Name: "idx_metric_buckets_bucket_start", Table: "metric_buckets", Column: "(bucket_start)"},
+
+	// Route bucket table — the query pattern is (user_id|project|bucket_start) for dashboard queries
+	{Name: "idx_route_buckets_bucket_start", Table: "route_buckets", Column: "(bucket_start)"},
+	{Name: "idx_route_buckets_user_project_start", Table: "route_buckets", Column: "(user_id, project, bucket_start)"},
 }
 
 // runMigrations applies schema changes that AutoMigrate cannot handle:
-//   - New indexes created CONCURRENTLY to avoid table locks
+//   - New indexes created CONCURRENTLY where needed
+//   - Drop indexes that were incorrectly created on the wrong table
 //   - Autovacuum tuning for the events table
 func runMigrations(db *gorm.DB) {
+	dropMisplacedBucketIndexes(db)
 	createIndexesConcurrently(db)
 	tuneAutovacuum(db)
 }
 
-// createIndexesConcurrently creates each desired index using CONCURRENTLY
-// if it doesn't already exist.
+// dropMisplacedBucketIndexes removes any bucket-table indexes that were
+// incorrectly created on the events table by an earlier buggy migration.
+func dropMisplacedBucketIndexes(db *gorm.DB) {
+	for _, name := range []string{"idx_metric_buckets_bucket_start", "idx_route_buckets_bucket_start", "idx_route_buckets_user_project_start"} {
+		// Check if the index exists on the events table
+		var onEvents int64
+		db.Raw(`SELECT COUNT(*) FROM pg_index i
+			JOIN pg_class idx ON idx.oid = i.indexrelid
+			JOIN pg_class tbl ON tbl.oid = i.indrelid
+			WHERE idx.relname = ? AND tbl.relname = 'events'`, name).Scan(&onEvents)
+		if onEvents > 0 {
+			log.Printf("migration: dropping misplaced index %s on events table", name)
+			db.Exec("DROP INDEX CONCURRENTLY IF EXISTS " + name)
+		}
+	}
+}
+
+// createIndexesConcurrently creates each desired index, using CONCURRENTLY
+// for the events table to avoid locking, and simple CREATE for small tables.
 func createIndexesConcurrently(db *gorm.DB) {
 	for _, idx := range desiredIndexes {
 		if indexExists(db, idx.Name) {
@@ -40,23 +68,18 @@ func createIndexesConcurrently(db *gorm.DB) {
 		if idx.Unique {
 			unique = "UNIQUE "
 		}
-		sql := "CREATE " + unique + "INDEX CONCURRENTLY IF NOT EXISTS " + idx.Name + " ON events " + idx.Column
-		if err := db.Exec(sql).Error; err != nil {
-			log.Printf("warning: could not create index %s concurrently: %v (may need to run outside transaction)", idx.Name, err)
-		} else {
-			log.Printf("created index %s", idx.Name)
-		}
-	}
 
-	// Indexes on bucket tables (smaller, safe to do in-transaction)
-	for _, idx := range []struct{ Name, Column string }{
-		{"idx_metric_buckets_bucket_start", "metric_buckets (bucket_start)"},
-		{"idx_route_buckets_bucket_start", "route_buckets (bucket_start)"},
-	} {
-		if !indexExists(db, idx.Name) {
-			if err := db.Exec("CREATE INDEX IF NOT EXISTS " + idx.Name + " ON " + idx.Column).Error; err != nil {
-				log.Printf("warning: could not create index %s: %v", idx.Name, err)
-			}
+		useConcurrently := idx.Table == "events"
+		concurrently := ""
+		if useConcurrently {
+			concurrently = "CONCURRENTLY "
+		}
+
+		sql := "CREATE " + unique + "INDEX " + concurrently + "IF NOT EXISTS " + idx.Name + " ON " + idx.Table + " " + idx.Column
+		if err := db.Exec(sql).Error; err != nil {
+			log.Printf("warning: could not create index %s on %s: %v", idx.Name, idx.Table, err)
+		} else {
+			log.Printf("created index %s on %s", idx.Name, idx.Table)
 		}
 	}
 }
@@ -79,4 +102,8 @@ func tuneAutovacuum(db *gorm.DB) {
 	db.Exec(`ALTER TABLE events SET (autovacuum_analyze_scale_factor = 0.005)`)
 	db.Exec(`ALTER TABLE events SET (autovacuum_analyze_threshold = 500)`)
 	log.Println("tuned autovacuum for events table (scale_factor=0.01/0.005, threshold=1000/500)")
+
+	// Also tune route_buckets since it's queried on every dashboard load
+	db.Exec(`ALTER TABLE route_buckets SET (autovacuum_vacuum_scale_factor = 0.05)`)
+	log.Println("tuned autovacuum for route_buckets table")
 }

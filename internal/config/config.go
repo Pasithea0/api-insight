@@ -51,7 +51,7 @@ func Load() *Config {
 		ListenAddr:         getenv("APP_LISTEN_ADDR", ":8080"),
 		RetentionDays:      30,
 		InternalAPIKey:     getenv("APP_INTERNAL_API_KEY", ""),
-		StatementTimeoutMs: 30000,
+		StatementTimeoutMs: 120000,
 	}
 
 	if v := os.Getenv("APP_STATEMENT_TIMEOUT_MS"); v != "" {
