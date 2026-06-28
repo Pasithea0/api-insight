@@ -34,6 +34,9 @@ func main() {
 	if cfg.PrettyLog {
 		logger.SetPrettyOutput(os.Stderr)
 	}
+	// Route the standard library log package through zerolog so all
+	// existing log.Printf calls get structured, timestamped output.
+	logger.RouteStandardLog()
 	zlog := logger.Log
 
 	sqlDB, err := db.Connect(cfg)

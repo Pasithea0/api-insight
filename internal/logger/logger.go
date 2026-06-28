@@ -2,6 +2,7 @@ package logger
 
 import (
 	"io"
+	"log"
 	"os"
 	"time"
 
@@ -48,4 +49,26 @@ func SetPrettyOutput(w io.Writer) {
 		Out:        w,
 		TimeFormat: time.RFC3339,
 	}).Level(Log.GetLevel()).With().Timestamp().Logger()
+}
+
+// RouteStandardLog redirects the standard library log package output
+// through zerolog so all existing log.Printf calls get structured output.
+func RouteStandardLog() {
+	log.SetFlags(0)
+	log.SetOutput(&logWriter{logger: Log.With().Logger()})
+}
+
+// logWriter adapts zerolog.Logger as an io.Writer for the standard log package.
+type logWriter struct {
+	logger zerolog.Logger
+}
+
+func (w *logWriter) Write(p []byte) (n int, err error) {
+	// Trim trailing newline that log.Printf appends
+	msg := string(p)
+	if len(msg) > 0 && msg[len(msg)-1] == '\n' {
+		msg = msg[:len(msg)-1]
+	}
+	w.logger.Info().Msg(msg)
+	return len(p), nil
 }
