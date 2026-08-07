@@ -36,7 +36,13 @@ func AttributeKeys(db *gorm.DB) fiber.Handler {
 
 		seen := make(map[string]bool, len(rows)+5)
 		keys := make([]string, 0, len(rows)+5)
-		for _, k := range []string{"status", "method", "route", "path", "remote_ip"} {
+		// Virtual keys always available: top-level columns plus "query",
+		// which is populated at ingest with the raw query string stripped
+		// from the route (e.g. "imdb_id=tt123&season=2"). It is exposed as a
+		// first-class filterable field so users can search requests by
+		// movie ID or any other query parameter even though routes are now
+		// stored normalized (without query strings).
+		for _, k := range []string{"status", "method", "route", "path", "remote_ip", "query"} {
 			seen[k] = true
 			keys = append(keys, k)
 		}

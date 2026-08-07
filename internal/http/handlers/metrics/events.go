@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/gofiber/fiber/v2"
+	"gorm.io/datatypes"
 	"gorm.io/gorm"
 
 	dbpkg "apiinsight/internal/db"
@@ -20,6 +21,9 @@ type recentEvent struct {
 	Status     int    `json:"status"`
 	DurationMs int64  `json:"duration_ms"`
 	Project    string `json:"project"`
+	// Attributes is included so the frontend can display the matched
+	// value when searching by an attribute key (e.g. "query").
+	Attributes datatypes.JSONMap `json:"attributes,omitempty"`
 }
 
 func RecentEvents(db *gorm.DB) fiber.Handler {
@@ -84,6 +88,7 @@ func RecentEvents(db *gorm.DB) fiber.Handler {
 				Status:     e.Status,
 				DurationMs: e.DurationMs,
 				Project:    e.Project,
+				Attributes: e.Attributes,
 			})
 		}
 
@@ -153,6 +158,7 @@ func AllEvents(db *gorm.DB) fiber.Handler {
 				Status:     e.Status,
 				DurationMs: e.DurationMs,
 				Project:    e.Project,
+				Attributes: e.Attributes,
 			})
 		}
 
@@ -212,7 +218,14 @@ func SearchEvents(db *gorm.DB) fiber.Handler {
 		q := db.Model(&dbpkg.Event{}).
 			Where("created_at >= ?", cutoff)
 		q = scopeQueryUserID(q, userID)
-		q = q.Where(expr+" LIKE ?", sqlPattern)
+		if field == "route" || field == "path" {
+			// Routes are stored normalized (without query strings), so a
+			// route search must also match the "query" attribute to keep the
+			// old workflow of searching for a movie ID (e.g. "tt123") alive.
+			q = q.Where("(route LIKE ? OR attributes::jsonb ->> 'query' LIKE ?)", sqlPattern, sqlPattern)
+		} else {
+			q = q.Where(expr+" LIKE ?", sqlPattern)
+		}
 
 		if project != "" {
 			q = q.Where("project = ?", project)
@@ -244,6 +257,7 @@ func SearchEvents(db *gorm.DB) fiber.Handler {
 				Status:     e.Status,
 				DurationMs: e.DurationMs,
 				Project:    e.Project,
+				Attributes: e.Attributes,
 			})
 		}
 
