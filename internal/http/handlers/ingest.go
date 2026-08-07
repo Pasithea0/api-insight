@@ -3,6 +3,7 @@ package handlers
 import (
 	"encoding/json"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
@@ -14,6 +15,18 @@ import (
 	dbpkg "apiinsight/internal/db"
 	httpctx "apiinsight/internal/http/ctx"
 )
+
+// normalizeRoute strips the query string from a raw request path so that
+// distinct query combinations collapse to a single route (e.g.
+// /v3/media?tmdb_id=1 and /v3/media?tmdb_id=2 both become /v3/media).
+// This keeps route cardinality bounded — critical for memory, aggregation
+// and dashboard queries.
+func normalizeRoute(raw string) string {
+	if i := strings.IndexByte(raw, '?'); i >= 0 {
+		return raw[:i]
+	}
+	return raw
+}
 
 var (
 	requestsTotal          *prometheus.CounterVec
@@ -114,6 +127,12 @@ func IngestHandler(db *gorm.DB, cfg *config.Config, batchWriter *BatchWriter) fi
 			for k, v := range ev.Attributes {
 				attrs[k] = v
 			}
+			// Preserve the raw query string (if any) as an attribute so no
+			// information is lost when the route is normalized.
+			if raw := ev.Path; raw != "" && strings.Contains(raw, "?") {
+				attrs["query"] = raw[strings.IndexByte(raw, '?')+1:]
+			}
+			route := normalizeRoute(ev.Path)
 
 			var expiresAt *time.Time
 			if retentionDays > 0 {
@@ -126,7 +145,7 @@ func IngestHandler(db *gorm.DB, cfg *config.Config, batchWriter *BatchWriter) fi
 				ExpiresAt:  expiresAt,
 				UserID:     ownerUserID,
 				Project:    project,
-				Route:      ev.Path,
+				Route:      route,
 				Method:     ev.Method,
 				Status:     status,
 				DurationMs: durationMs,
@@ -135,9 +154,9 @@ func IngestHandler(db *gorm.DB, cfg *config.Config, batchWriter *BatchWriter) fi
 			}
 			records = append(records, rec)
 
-			labels := []string{project, ev.Path, ev.Method, strconv.Itoa(status)}
+			labels := []string{project, route, ev.Method, strconv.Itoa(status)}
 			requestsTotal.WithLabelValues(labels...).Inc()
-			requestDurationBuckets.WithLabelValues(project, ev.Path, ev.Method).
+			requestDurationBuckets.WithLabelValues(project, route, ev.Method).
 				Observe(float64(durationMs) / 1000.0)
 		}
 

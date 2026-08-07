@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"log"
+	"sync"
 	"time"
 
 	"gorm.io/gorm"
@@ -9,49 +10,105 @@ import (
 	dbpkg "apiinsight/internal/db"
 )
 
-// BatchWriter receives event batches on a channel and writes them to the
-// database using GORM's batched Create. This decouples the ingest HTTP
-// handler from the DB write latency, preventing backpressure during traffic
-// spikes.
+// FlushInterval is how often the batch writer drains buffered events
+// into the database when the buffer hasn't reached MaxBatchSize yet.
+// Events accumulate in memory for at most this long before being
+// persisted in one multi-row INSERT.
+const FlushInterval = 2 * time.Second
+
+// MaxBatchSize is the maximum number of events buffered in memory before
+// an immediate flush is triggered. It stays under PostgreSQL's parameter
+// limit for a single multi-row INSERT (~65535 params / ~11 columns).
+const MaxBatchSize = 5000
+
+// BatchWriter accumulates ingested events in memory and writes them to
+// the database in periodic multi-row INSERTs. This decouples the ingest
+// HTTP handler from DB write latency AND amortizes writes: at N events/s
+// we issue one INSERT per FlushInterval instead of one per request.
 type BatchWriter struct {
-	input chan []dbpkg.Event
-	done  chan struct{}
-	db    *gorm.DB
+	db *gorm.DB
+
+	mu      sync.Mutex
+	pending []dbpkg.Event
+
+	flushCh chan struct{}
+	stop    chan struct{}
+	done    chan struct{}
 }
 
 // NewBatchWriter starts the background writer goroutine.
-// bufferSize: max queued batches before the ingest handler blocks.
+// bufferSize is retained for API compatibility; batching is governed by
+// FlushInterval and MaxBatchSize.
 func NewBatchWriter(db *gorm.DB, bufferSize int) *BatchWriter {
 	bw := &BatchWriter{
-		input: make(chan []dbpkg.Event, bufferSize),
-		done:  make(chan struct{}),
-		db:    db,
+		db:      db,
+		pending: make([]dbpkg.Event, 0, MaxBatchSize),
+		flushCh: make(chan struct{}, 1),
+		stop:    make(chan struct{}),
+		done:    make(chan struct{}),
 	}
 	go bw.loop()
 	return bw
 }
 
-// Submit enqueues a batch of events for writing. Blocks if the buffer is full.
+// Submit appends events to the in-memory buffer. It never blocks on the
+// database; if the buffer reaches MaxBatchSize it signals an immediate
+// flush so memory stays bounded.
 func (bw *BatchWriter) Submit(events []dbpkg.Event) {
-	bw.input <- events
+	bw.mu.Lock()
+	bw.pending = append(bw.pending, events...)
+	over := len(bw.pending) >= MaxBatchSize
+	bw.mu.Unlock()
+
+	if over {
+		select {
+		case bw.flushCh <- struct{}{}:
+		default: // a flush is already pending; the ticker will drain it
+		}
+	}
 }
 
-// Stop gracefully shuts down the writer, flushing remaining events.
+// Stop flushes any remaining buffered events and shuts down the writer.
 func (bw *BatchWriter) Stop() {
-	close(bw.input)
+	close(bw.stop)
 	<-bw.done
 }
 
 func (bw *BatchWriter) loop() {
-	for batch := range bw.input {
-		if err := bw.db.Create(&batch).Error; err != nil {
-			log.Printf("batch writer: failed to persist %d events: %v", len(batch), err)
+	ticker := time.NewTicker(FlushInterval)
+	defer ticker.Stop()
+	defer close(bw.done)
+
+	for {
+		select {
+		case <-ticker.C:
+			bw.flush()
+		case <-bw.flushCh:
+			bw.flush()
+		case <-bw.stop:
+			bw.flush()
+			return
 		}
 	}
-	close(bw.done)
 }
 
-// FlushInterval is how often the batch writer checks for pending events
-// when the channel is idle (not used in this simple implementation since
-// we write each batch as it arrives).
-const FlushInterval = 500 * time.Millisecond
+// flush persists all buffered events in a single batched Create.
+// On failure the batch is re-queued so a transient connection blip
+// does not lose data.
+func (bw *BatchWriter) flush() {
+	bw.mu.Lock()
+	if len(bw.pending) == 0 {
+		bw.mu.Unlock()
+		return
+	}
+	batch := bw.pending
+	bw.pending = make([]dbpkg.Event, 0, MaxBatchSize)
+	bw.mu.Unlock()
+
+	if err := bw.db.Create(&batch).Error; err != nil {
+		log.Printf("batch writer: failed to persist %d events: %v", len(batch), err)
+		bw.mu.Lock()
+		bw.pending = append(bw.pending, batch...)
+		bw.mu.Unlock()
+	}
+}
