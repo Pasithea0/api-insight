@@ -3,6 +3,7 @@ package db
 import (
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -60,15 +61,49 @@ func Connect(cfg *config.Config) (*gorm.DB, error) {
 	sqlDB.SetConnMaxIdleTime(5 * time.Minute)
 
 	// Auto-migrate the core tables.
+	//
+	// On a hypertable, TimescaleDB refuses some ALTERs that AutoMigrate
+	// likes to issue against partitioned columns (e.g. "cannot drop not-null
+	// constraint from a time-partitioned column"). A migration hiccup on the
+	// partitioned events table must not stop the service from starting, so
+	// that specific case is logged loudly and stepped over instead of being
+	// fatal. Any other migration error is still returned.
 	if err := db.AutoMigrate(
 		&Event{}, &User{}, &APIKey{},
-		&MetricBucket{}, &RouteBucket{}, &DailyMetricBucket{}, &AttributeKeyIndex{},
+		&MetricBucket{}, &RouteBucket{}, &DailyMetricBucket{}, &DailyRouteBucket{},
+		&AttributeKeyIndex{},
 	); err != nil {
-		return nil, err
+		if isHypertable(db, "events") {
+			log.Printf("warning: AutoMigrate could not fully reconcile the events hypertable: %v\n"+
+				"  TimescaleDB blocks structural ALTERs on a hypertable's partitioning column. "+
+				"If a new column is genuinely missing, add it with an explicit migration.", err)
+		} else {
+			return nil, err
+		}
 	}
 
 	// Apply schema migrations (indexes, autovacuum tuning) after AutoMigrate.
 	runMigrations(db)
+
+	// Convert `events` into a TimescaleDB hypertable when the extension is
+	// available. This runs after AutoMigrate so every expected column and
+	// index exists before the table is repartitioned, and after
+	// runMigrations so index creation can still use the CONCURRENTLY path
+	// on a plain table (TimescaleDB forbids it once partitioned).
+	state, err := setupTimescale(db, TimescaleOptions{
+		Enabled:              cfg.TimescaleEnabled,
+		ChunkInterval:        cfg.TimescaleChunkInterval,
+		ColumnstoreAfter:     cfg.TimescaleColumnstoreAfter,
+		RawRetentionDays:     cfg.RawRetentionDays,
+		ContinuousAggregates: cfg.TimescaleContinuousAggregates,
+	})
+	tsState = state
+	if err != nil {
+		// A failure here must not stop the service: ingest on a plain
+		// (unpartitioned) events table still works correctly, it is just
+		// slower. Surface it loudly instead.
+		log.Printf("warning: TimescaleDB setup incomplete, continuing on plain Postgres: %v", err)
+	}
 
 	return db, nil
 }

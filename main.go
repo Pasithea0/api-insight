@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"net/url"
 	"os"
 	"os/signal"
 	"syscall"
@@ -11,8 +12,10 @@ import (
 	"github.com/gofiber/fiber/v2/middleware/filesystem"
 	"github.com/gofiber/fiber/v2/middleware/requestid"
 	"github.com/joho/godotenv"
+	"github.com/rs/zerolog"
 
 	"apiinsight/internal/cache"
+	"apiinsight/internal/clickhouse"
 	"apiinsight/internal/config"
 	"apiinsight/internal/db"
 	"apiinsight/internal/http/handlers"
@@ -22,6 +25,54 @@ import (
 	"apiinsight/web"
 	"net/http"
 )
+
+// startClickHouseMirror connects the optional ClickHouse mirror. It returns a
+// nil client (and a no-op closer) whenever the mirror is disabled or cannot
+// be reached, so callers never have to branch on configuration.
+func startClickHouseMirror(cfg *config.Config, zlog zerolog.Logger) (*clickhouse.Client, func()) {
+	if !cfg.ClickHouseEnabled {
+		return nil, func() {}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	client, err := clickhouse.Connect(ctx, cfg.ClickHouseDSN, cfg.ClickHouseRetentionDays)
+	if err != nil {
+		zlog.Error().Err(err).Str("dsn", redactDSN(cfg.ClickHouseDSN)).
+			Msg("clickhouse: unreachable, continuing with Postgres only")
+		return nil, func() {}
+	}
+	if err := client.EnsureSchema(ctx); err != nil {
+		zlog.Error().Err(err).Msg("clickhouse: schema setup failed, continuing with Postgres only")
+		_ = client.Close()
+		return nil, func() {}
+	}
+
+	zlog.Info().
+		Str("dsn", redactDSN(cfg.ClickHouseDSN)).
+		Int("retention_days", cfg.ClickHouseRetentionDays).
+		Msg("clickhouse mirror enabled (Postgres remains the system of record)")
+
+	return client, func() {
+		if err := client.Close(); err != nil {
+			zlog.Error().Err(err).Msg("clickhouse: close failed")
+		}
+	}
+}
+
+// redactDSN strips credentials from a DSN so it can be logged. A DSN like
+// clickhouse://user:secret@host:9000/db must never reach the logs verbatim.
+func redactDSN(dsn string) string {
+	u, err := url.Parse(dsn)
+	if err != nil {
+		return "(unparseable dsn)"
+	}
+	if u.User != nil {
+		u.User = url.User(u.User.Username())
+	}
+	return u.String()
+}
 
 func main() {
 	_ = godotenv.Load()
@@ -66,10 +117,23 @@ func main() {
 	partialCache := cache.NewPartialHourCache(sqlDB, 30*time.Second)
 	defer partialCache.Stop()
 
+	// Optional ClickHouse mirror. Postgres remains the system of record and
+	// the service runs identically without this: a failure to reach
+	// ClickHouse downgrades to Postgres-only rather than blocking startup,
+	// because the mirror is an optimisation, not a dependency.
+	//
+	// Registered before batchWriter.Stop so that, by LIFO defer ordering,
+	// the writer drains its in-flight mirror writes before the sink closes.
+	chClient, closeSink := startClickHouseMirror(cfg, zlog)
+	defer closeSink()
+
 	// Batch writer for async event ingestion.
 	// Buffer 100 batches (up to 5000 events each = 500K events in flight).
 	batchWriter := handlers.NewBatchWriter(sqlDB, 100)
 	defer batchWriter.Stop()
+	if chClient != nil {
+		batchWriter.SetSink(chClient)
+	}
 
 	app := fiber.New(fiber.Config{
 		ReadTimeout:  10 * time.Second,

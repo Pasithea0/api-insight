@@ -1,0 +1,77 @@
+# Local development stack for api-insight storage work.
+#
+# Spins up the two engines the storage migration targets, with throwaway
+# volumes so `docker compose -f docker-compose.dev.yml down -v` resets
+# everything:
+#
+#   timescaledb  Postgres 17 + TimescaleDB    localhost:55434
+#   clickhouse   ClickHouse server            localhost:58123 (HTTP) / localhost:59000 (native)
+#
+# Bring up:   docker compose -f docker-compose.dev.yml up -d
+# Tear down:  docker compose -f docker-compose.dev.yml down -v
+#
+# This is NOT the production deployment — production runs on Coolify. See
+# docs/timescaledb-clickhouse.md for the production runbook.
+
+services:
+  timescaledb:
+    image: timescale/timescaledb:latest-pg17
+    container_name: apiinsight-ts-dev
+    environment:
+      POSTGRES_USER: apiinsight
+      POSTGRES_PASSWORD: apiinsight
+      POSTGRES_DB: apiinsight
+      # TimescaleDB requires its library preloaded by the server process;
+      # the official image sets this already, restating it keeps the
+      # requirement visible if the image is ever swapped for plain postgres.
+      POSTGRES_INITDB_ARGS: "--data-checksums"
+    command:
+      - postgres
+      - -c
+      - shared_preload_libraries=timescaledb
+      - -c
+      - timescaledb.telemetry_level=off
+      - -c
+      - max_worker_processes=16
+      - -c
+      - shared_buffers=1GB
+      - -c
+      - work_mem=64MB
+      - -c
+      - maintenance_work_mem=512MB
+    ports:
+      - "55434:5432"
+    volumes:
+      - ts-dev-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U apiinsight -d apiinsight"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:latest
+    container_name: apiinsight-ch-dev
+    environment:
+      CLICKHOUSE_USER: apiinsight
+      CLICKHOUSE_PASSWORD: apiinsight
+      CLICKHOUSE_DB: apiinsight
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    ports:
+      - "58123:8123"
+      - "59000:9000"
+    volumes:
+      - ch-dev-data:/var/lib/clickhouse
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8123/ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  ts-dev-data:
+  ch-dev-data:

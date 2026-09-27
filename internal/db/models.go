@@ -12,7 +12,15 @@ import (
 type Event struct {
 	ID uint `gorm:"primaryKey"`
 
-	CreatedAt time.Time `gorm:"index:idx_events_user_created_at,priority:2;index:idx_events_user_project_created_at,priority:3;index:idx_events_user_status_created_at,priority:3"`
+	// CreatedAt is the event timestamp. It is explicitly NOT NULL because
+	// it is the hypertable partitioning column once TimescaleDB is in play,
+	// and TimescaleDB forces partitioning columns to be non-nullable. It is
+	// wrong to leave it nullable in the model: GORM would then try to
+	// reconcile the difference with `ALTER COLUMN ... DROP NOT NULL`, which
+	// TimescaleDB rejects with SQLSTATE TS101 ("cannot drop not-null
+	// constraint from a time-partitioned column") — and AutoMigrate runs on
+	// every startup, so that would break the second boot of any deployment.
+	CreatedAt time.Time `gorm:"not null;index:idx_events_user_created_at,priority:2;index:idx_events_user_project_created_at,priority:3;index:idx_events_user_status_created_at,priority:3"`
 
 	// ExpiresAt is the timestamp after which this event is eligible
 	// for deletion by the retention worker. A nil value means the

@@ -14,6 +14,14 @@ import (
 func runAggregationOnce(db *gorm.DB, bucketStart time.Time) error {
 	bucketEnd := bucketStart.Add(time.Hour)
 
+	// When TimescaleDB continuous aggregates are in play, materialise the
+	// bucket we are about to roll up. Doing it here (rather than trusting
+	// the background refresh schedule) keeps the worker's output
+	// deterministic: it never reads a half-materialised bucket.
+	if err := refreshRollupAggregates(db, bucketStart, bucketEnd); err != nil {
+		return err
+	}
+
 	// 1. Aggregate overall metrics into MetricBucket
 	if err := aggregateMetricBuckets(db, bucketStart, bucketEnd); err != nil {
 		return err
@@ -55,19 +63,30 @@ type metricAggRow struct {
 
 func aggregateMetricBuckets(db *gorm.DB, bucketStart, bucketEnd time.Time) error {
 	var rows []metricAggRow
-	err := db.Raw(`
-		SELECT 
-			user_id, 
-			project, 
-			COUNT(*) as total_count, 
+	// Source relation: the TimescaleDB continuous aggregate is pre-computed per
+	// hour, so this reads a few hundred rows instead of scanning every raw
+	// event in the bucket. The plain-events query is the fallback.
+	query := `
+		SELECT
+			user_id,
+			project,
+			COUNT(*) as total_count,
 			COUNT(*) FILTER (WHERE status >= 400) as error_count,
 			percentile_cont(0.5) WITHIN GROUP (ORDER BY duration_ms) as p50,
 			percentile_cont(0.95) WITHIN GROUP (ORDER BY duration_ms) as p95,
 			percentile_cont(0.99) WITHIN GROUP (ORDER BY duration_ms) as p99
-		FROM events 
+		FROM events
 		WHERE created_at >= ? AND created_at < ?
 		GROUP BY user_id, project
-	`, bucketStart, bucketEnd).Scan(&rows).Error
+	`
+	if UseContinuousAggregates() {
+		query = `
+			SELECT user_id, project, total_count, error_count, p50, p95, p99
+			FROM ` + continuousAggregateMetrics + `
+			WHERE bucket_start >= ? AND bucket_start < ?
+		`
+	}
+	err := db.Raw(query, bucketStart, bucketEnd).Scan(&rows).Error
 	if err != nil {
 		return err
 	}
@@ -115,12 +134,20 @@ type routeAggRow struct {
 
 func aggregateRouteBuckets(db *gorm.DB, bucketStart, bucketEnd time.Time) error {
 	var statusRows []routeAggRow
-	err := db.Raw(`
+	query := `
 		SELECT user_id, project, route, status, COUNT(*) as count, AVG(duration_ms) as avg_duration
 		FROM events
 		WHERE created_at >= ? AND created_at < ?
 		GROUP BY user_id, project, route, status
-	`, bucketStart, bucketEnd).Scan(&statusRows).Error
+	`
+	if UseContinuousAggregates() {
+		query = `
+			SELECT user_id, project, route, status, count, avg_duration
+			FROM ` + continuousAggregateRoutes + `
+			WHERE bucket_start >= ? AND bucket_start < ?
+		`
+	}
+	err := db.Raw(query, bucketStart, bucketEnd).Scan(&statusRows).Error
 	if err != nil {
 		return err
 	}
@@ -200,10 +227,15 @@ func aggregateAttributeKeys(db *gorm.DB, bucketStart, bucketEnd time.Time) error
 		Key     string
 	}
 	var rows []attrKeyRow
+	// Guard on jsonb_typeof rather than `attributes IS NOT NULL AND
+	// attributes != '{}'`. A JSON `null` scalar is not SQL NULL, so it
+	// passed the old guard and then jsonb_object_keys() raised
+	// "cannot call jsonb_object_keys on a scalar", failing the whole
+	// aggregation pass. Only a JSON object has keys.
 	err := db.Raw(`
 		SELECT DISTINCT user_id, project, jsonb_object_keys(attributes) AS key
 		FROM events
-		WHERE created_at >= ? AND created_at < ? AND attributes IS NOT NULL AND attributes != '{}'::jsonb
+		WHERE created_at >= ? AND created_at < ? AND jsonb_typeof(attributes) = 'object'
 	`, bucketStart, bucketEnd).Scan(&rows).Error
 	if err != nil {
 		return err
@@ -420,13 +452,28 @@ func aggregateDailyRoutes(db *gorm.DB, dayStart time.Time) error {
 			Count  int64
 		}
 		var daySCs []scRow
-		if err := db.Model(&Event{}).
-			Select("status, COUNT(*) AS count").
-			Where("user_id = ? AND project = ? AND route = ? AND created_at >= ? AND created_at < ?",
-				r.UserID, r.Project, r.Route, dayStart, dayEnd).
-			Group("status").
-			Scan(&daySCs).Error; err != nil {
-			return err
+		var statusErr error
+		if UseContinuousAggregates() {
+			// The routes cagg already carries the status dimension, so the
+			// day's status histogram comes from a few hundred pre-aggregated
+			// rows rather than a full-day scan of raw events.
+			statusErr = db.Raw(`
+				SELECT status, SUM(count) AS count
+				FROM `+continuousAggregateRoutes+`
+				WHERE user_id = ? AND project = ? AND route = ?
+				  AND bucket_start >= ? AND bucket_start < ?
+				GROUP BY status
+			`, r.UserID, r.Project, r.Route, dayStart, dayEnd).Scan(&daySCs).Error
+		} else {
+			statusErr = db.Model(&Event{}).
+				Select("status, COUNT(*) AS count").
+				Where("user_id = ? AND project = ? AND route = ? AND created_at >= ? AND created_at < ?",
+					r.UserID, r.Project, r.Route, dayStart, dayEnd).
+				Group("status").
+				Scan(&daySCs).Error
+		}
+		if statusErr != nil {
+			return statusErr
 		}
 		statusJSON := make(map[string]interface{}, len(daySCs))
 		for _, sc := range daySCs {

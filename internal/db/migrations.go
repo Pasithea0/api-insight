@@ -52,14 +52,30 @@ func dropMisplacedBucketIndexes(db *gorm.DB) {
 			WHERE idx.relname = ? AND tbl.relname = 'events'`, name).Scan(&onEvents)
 		if onEvents > 0 {
 			log.Printf("migration: dropping misplaced index %s on events table", name)
-			db.Exec("DROP INDEX CONCURRENTLY IF EXISTS " + name)
+			// CONCURRENTLY is preferred so we don't lock the table, but it
+			// is not permitted on a hypertable — fall back to a plain drop.
+			if err := db.Exec("DROP INDEX CONCURRENTLY IF EXISTS " + name).Error; err != nil {
+				log.Printf("migration: concurrent drop of %s failed (%v); retrying without CONCURRENTLY", name, err)
+				if err := db.Exec("DROP INDEX IF EXISTS " + name).Error; err != nil {
+					log.Printf("migration: could not drop misplaced index %s: %v", name, err)
+				}
+			}
 		}
 	}
 }
 
 // createIndexesConcurrently creates each desired index, using CONCURRENTLY
 // for the events table to avoid locking, and simple CREATE for small tables.
+//
+// CONCURRENTLY is only legal while `events` is a plain table. TimescaleDB
+// rejects it outright on a hypertable ("hypertables do not support
+// concurrent index creation"), so once the table is time-partitioned this
+// falls back to a plain CREATE INDEX, which TimescaleDB propagates to every
+// chunk. That path takes a lock, so new indexes on a converted events table
+// are a maintenance-window operation, not a startup side effect.
 func createIndexesConcurrently(db *gorm.DB) {
+	eventsIsHypertable := isHypertable(db, "events")
+
 	for _, idx := range desiredIndexes {
 		if indexExists(db, idx.Name) {
 			continue
@@ -69,10 +85,13 @@ func createIndexesConcurrently(db *gorm.DB) {
 			unique = "UNIQUE "
 		}
 
-		useConcurrently := idx.Table == "events"
 		concurrently := ""
-		if useConcurrently {
-			concurrently = "CONCURRENTLY "
+		if idx.Table == "events" {
+			if eventsIsHypertable {
+				log.Printf("migration: events is a hypertable; creating %s without CONCURRENTLY", idx.Name)
+			} else {
+				concurrently = "CONCURRENTLY "
+			}
 		}
 
 		sql := "CREATE " + unique + "INDEX " + concurrently + "IF NOT EXISTS " + idx.Name + " ON " + idx.Table + " " + idx.Column
