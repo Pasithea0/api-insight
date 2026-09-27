@@ -22,7 +22,7 @@ type recentEvent struct {
 	DurationMs int64  `json:"duration_ms"`
 	Project    string `json:"project"`
 	// Attributes is included so the frontend can display the matched
-	// value when searching by an attribute key (e.g. "query").
+	// value when searching by an attribute key.
 	Attributes datatypes.JSONMap `json:"attributes,omitempty"`
 }
 
@@ -218,14 +218,7 @@ func SearchEvents(db *gorm.DB) fiber.Handler {
 		q := db.Model(&dbpkg.Event{}).
 			Where("created_at >= ?", cutoff)
 		q = scopeQueryUserID(q, userID)
-		if field == "route" || field == "path" {
-			// Routes are stored normalized (without query strings), so a
-			// route search must also match the "query" attribute to keep the
-			// old workflow of searching for a movie ID (e.g. "tt123") alive.
-			q = q.Where("(route LIKE ? OR attributes::jsonb ->> 'query' LIKE ?)", sqlPattern, sqlPattern)
-		} else {
-			q = q.Where(expr+" LIKE ?", sqlPattern)
-		}
+		q = q.Where(expr+" LIKE ?", sqlPattern)
 
 		if project != "" {
 			q = q.Where("project = ?", project)
