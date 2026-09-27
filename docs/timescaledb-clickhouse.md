@@ -155,6 +155,64 @@ Deploy the ClickHouse service, set `APP_CLICKHOUSE_DSN` and
 backfill** of history, so ClickHouse only holds events ingested after it was
 switched on.
 
+### 7. Switch dashboard reads to ClickHouse (once it has caught up)
+
+Writing the mirror and reading from it are deliberately separate decisions.
+Because there is no backfill, for the first days after step 6 ClickHouse holds
+*less* history than Postgres, and switching reads over immediately would lose
+search results.
+
+```bash
+# default: every raw-event read goes to Postgres
+APP_CLICKHOUSE_READ_SOURCE=postgres
+
+# once the mirror covers the history you care about:
+APP_CLICKHOUSE_READ_SOURCE=clickhouse
+```
+
+This governs the raw-event endpoints the embedded page uses for its event
+tables:
+
+| Endpoint | Reads from |
+| --- | --- |
+| `GET /v1/metrics/recent` | configured store |
+| `GET /v1/metrics/all-events` | configured store |
+| `GET /v1/metrics/search-events` | configured store |
+| `GET /v1/metrics/event/:id` | configured store, then the other on a miss |
+| `GET /v1/metrics/export` | configured store for the event sources |
+
+The aggregate endpoints (`traffic`, `error-rate`, `latency-percentiles`,
+`avg-duration`, `top-routes`, `attribute-*`, `pattern-counts`) keep reading the
+Postgres rollups — those are already millisecond queries over pre-aggregated
+buckets, and ClickHouse holds raw rows, not rollups.
+
+**Any request can override the choice** with `?store=clickhouse|postgres`, so
+you can compare the two live from the dashboard without a redeploy or a
+restart:
+
+```
+/v1/metrics/search-events?field=route&pattern=tt123&store=clickhouse
+/v1/metrics/recent?store=postgres
+```
+
+The parameter is `?store=`, not `?source=`: `export` already uses `?source=`
+to select *what* to export (`recent` / `all-events` / `search-events`). One
+endpoint, two meanings of one name, is how you get a silent misread — so they
+are named apart.
+
+Every raw-event response carries a `source` field naming the store that
+answered it, which is how you confirm the switch actually took effect rather
+than assuming it:
+
+```bash
+curl -s -b cookies.txt 'localhost:8080/v1/metrics/recent?limit=5' | jq .source
+```
+
+If the configured store errors, the request transparently falls back to
+Postgres (logged as a warning) rather than blanking the dashboard. A genuine
+empty result does **not** trigger a fallback — zero rows is an answer, not a
+failure.
+
 ## Known limitations
 
 - **Columnstore must outlive per-key retention.** Deleting individual rows
@@ -165,11 +223,17 @@ switched on.
   (`Code 450 BAD_TTL_EXPRESSION`) because a TTL expression cannot be
   `Nullable`. The DDL wraps it: `TTL ifNull(expires_at, <far future>) DELETE
   WHERE ifNull(expires_at, <far future>) < now()`. Verified working.
-- **ClickHouse has no backfill** (see step 6).
-- **The ClickHouse read path is not wired.** Events mirror into ClickHouse
-  but no dashboard or `/v1/metrics/*` endpoint reads from it yet, so today
-  ClickHouse is write-only storage that you query by hand. Wiring
-  search/export to it is the next batch of work.
+- **ClickHouse has no backfill** (see step 6). This is the reason step 7 is a
+  separate, deliberate switch. If you want to read long history from
+  ClickHouse before it has accumulated it, you need to copy the rows in from
+  Postgres first.
+- **Attribute values are strings in ClickHouse.** The mirror flattens every
+  attribute value to a string (`2` is queryable as `'2'`), whereas Postgres
+  keeps the original JSON type. A numeric attribute filter that matches in one
+  store can therefore miss in the other. Use `?store=` to compare if a filter
+  returns fewer rows than expected.
+- **`LIKE` semantics match.** Both stores use case-sensitive `LIKE` with `%`
+  and `_`, so `starts_with` / `ends_with` / `includes` behave identically.
 - **No index adds on a live hypertable.** `CREATE INDEX CONCURRENTLY` is not
   permitted once partitioned, so new indexes on `events` are now
   maintenance-window operations rather than startup side effects.

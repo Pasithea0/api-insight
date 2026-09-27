@@ -6,7 +6,6 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 	"gorm.io/datatypes"
-	"gorm.io/gorm"
 
 	dbpkg "apiinsight/internal/db"
 	"apiinsight/internal/http/handlers"
@@ -26,46 +25,72 @@ type recentEvent struct {
 	Attributes datatypes.JSONMap `json:"attributes,omitempty"`
 }
 
-func RecentEvents(db *gorm.DB) fiber.Handler {
+// pageParams reads limit/offset, clamping limit to max.
+func pageParams(ctx *fiber.Ctx, defaultLimit, max int) (limit, offset int) {
+	limit = defaultLimit
+	if s := ctx.Query("limit"); s != "" {
+		if n, err := strconv.Atoi(s); err == nil && n > 0 {
+			if n > max {
+				n = max
+			}
+			limit = n
+		}
+	}
+	if s := ctx.Query("offset"); s != "" {
+		if n, err := strconv.Atoi(s); err == nil && n >= 0 {
+			offset = n
+		}
+	}
+	return limit, offset
+}
+
+// listEvents serves recent-events, all-events and search-events, which share
+// one shape: the same filters, newest first, with a limit+1 trick to report
+// has_more without an expensive COUNT(*).
+//
+// The store is chosen by RawEvents, so these endpoints read from ClickHouse
+// when the mirror is configured as the source.
+func listEvents(raw *dbpkg.RawEvents, defaultLimit, maxLimit int, searchable bool) fiber.Handler {
 	return func(ctx *fiber.Ctx) error {
 		user, ok := handlers.MustUser(ctx)
 		if !ok {
 			return nil
 		}
-		userID := scopeUserID(ctx, user)
-		project := ctx.Query("project")
-		status := ctx.Query("status")
-		attrKey := ctx.Query("attr_key")
-		attrValue := ctx.Query("attr_value")
-		cutoff, _ := parseRange(ctx)
 
-		limit := 10
-		if s := ctx.Query("limit"); s != "" {
-			if n, err := strconv.Atoi(s); err == nil && n > 0 {
-				if n > 200 {
-					n = 200
-				}
-				limit = n
+		limit, offset := pageParams(ctx, defaultLimit, maxLimit)
+
+		q := dbpkg.EventQuery{
+			UserID:    scopeUserID(ctx, user),
+			Project:   ctx.Query("project"),
+			Status:    ctx.Query("status"),
+			AttrKey:   ctx.Query("attr_key"),
+			AttrValue: ctx.Query("attr_value"),
+			Cutoff:    func() time.Time { c, _ := parseRange(ctx); return c }(),
+			Limit:     limit + 1, // fetch one extra to detect has_more
+			Offset:    offset,
+		}
+
+		if searchable {
+			field := ctx.Query("field")
+			pattern := ctx.Query("pattern")
+			if field == "" || pattern == "" {
+				return errResponse(ctx, fiber.StatusBadRequest, "missing field or pattern")
 			}
-		}
-		offset := 0
-		if s := ctx.Query("offset"); s != "" {
-			if n, err := strconv.Atoi(s); err == nil && n >= 0 {
-				offset = n
+			// Validate the field before it reaches any store, so an invalid
+			// name is a 400 rather than a 500 from the query layer.
+			if _, ok := dbpkg.PostgresFieldExpr(field); !ok {
+				return errResponse(ctx, fiber.StatusBadRequest, "invalid field")
 			}
+			q.Field = field
+			q.Pattern = likePattern(ctx.Query("type"), pattern)
 		}
 
-		q := db.Model(&dbpkg.Event{}).Where("created_at >= ?", cutoff)
-		q = scopeQueryUserID(q, userID)
-		if project != "" {
-			q = q.Where("project = ?", project)
-		}
-		q = applyMetricsFilters(q, status, attrKey, attrValue)
-
-		// Fetch limit+1 to determine has_more without an expensive COUNT(*)
-		var events []dbpkg.Event
-		if err := q.Order("created_at DESC").Limit(limit + 1).Offset(offset).Find(&events).Error; err != nil {
-			return errResponse(ctx, fiber.StatusInternalServerError, "failed to query recent events")
+		// The store override is ?store=, deliberately NOT ?source=. On the
+		// export endpoint ?source= already selects *what* to export, so
+		// reusing the name would make the override unusable there.
+		events, source, err := raw.QueryEvents(ctx.Context(), ctx.Query("store"), q)
+		if err != nil {
+			return errResponse(ctx, fiber.StatusInternalServerError, "failed to query events")
 		}
 
 		hasMore := len(events) > limit
@@ -92,168 +117,35 @@ func RecentEvents(db *gorm.DB) fiber.Handler {
 			})
 		}
 
-		return jsonResponse(ctx, map[string]any{"events": rows, "total": 0, "has_more": hasMore})
+		return jsonResponse(ctx, map[string]any{
+			"events":   rows,
+			"total":    0,
+			"has_more": hasMore,
+			"source":   source,
+		})
 	}
 }
 
-func AllEvents(db *gorm.DB) fiber.Handler {
-	return func(ctx *fiber.Ctx) error {
-		user, ok := handlers.MustUser(ctx)
-		if !ok {
-			return nil
-		}
-		userID := scopeUserID(ctx, user)
-		project := ctx.Query("project")
-		status := ctx.Query("status")
-		attrKey := ctx.Query("attr_key")
-		attrValue := ctx.Query("attr_value")
-		cutoff, _ := parseRange(ctx)
-
-		limit := 50
-		if s := ctx.Query("limit"); s != "" {
-			if n, err := strconv.Atoi(s); err == nil && n > 0 {
-				if n > 200 {
-					n = 200
-				}
-				limit = n
-			}
-		}
-		offset := 0
-		if s := ctx.Query("offset"); s != "" {
-			if n, err := strconv.Atoi(s); err == nil && n >= 0 {
-				offset = n
-			}
-		}
-
-		q := db.Model(&dbpkg.Event{}).Where("created_at >= ?", cutoff)
-		q = scopeQueryUserID(q, userID)
-		if project != "" {
-			q = q.Where("project = ?", project)
-		}
-		q = applyMetricsFilters(q, status, attrKey, attrValue)
-
-		// Fetch limit+1 to determine has_more without an expensive COUNT(*)
-		var events []dbpkg.Event
-		if err := q.Order("created_at DESC").Limit(limit + 1).Offset(offset).Find(&events).Error; err != nil {
-			return errResponse(ctx, fiber.StatusInternalServerError, "failed to query all events")
-		}
-
-		hasMore := len(events) > limit
-		if hasMore {
-			events = events[:limit]
-		}
-
-		timeFormat := "12"
-		if user.TimeFormat != "" {
-			timeFormat = user.TimeFormat
-		}
-		rows := make([]recentEvent, 0, len(events))
-		for _, e := range events {
-			rows = append(rows, recentEvent{
-				ID:         e.ID,
-				Time:       handlers.FormatEventTime(e.CreatedAt, timeFormat),
-				CreatedAt:  e.CreatedAt.UTC().Format(time.RFC3339),
-				Method:     e.Method,
-				Route:      e.Route,
-				Status:     e.Status,
-				DurationMs: e.DurationMs,
-				Project:    e.Project,
-				Attributes: e.Attributes,
-			})
-		}
-
-		return jsonResponse(ctx, map[string]any{"events": rows, "total": 0, "has_more": hasMore})
+// likePattern expands a match type into a SQL LIKE pattern.
+func likePattern(matchType, pattern string) string {
+	switch matchType {
+	case "ends_with":
+		return "%" + pattern
+	case "starts_with":
+		return pattern + "%"
+	default: // includes
+		return "%" + pattern + "%"
 	}
 }
 
-func SearchEvents(db *gorm.DB) fiber.Handler {
-	return func(ctx *fiber.Ctx) error {
-		user, ok := handlers.MustUser(ctx)
-		if !ok {
-			return nil
-		}
-		userID := scopeUserID(ctx, user)
-		field := ctx.Query("field") // "route", "remote_ip", or an attribute key
-		pattern := ctx.Query("pattern")
-		matchType := ctx.Query("type") // "includes", "ends_with", "starts_with"
+func RecentEvents(raw *dbpkg.RawEvents) fiber.Handler {
+	return listEvents(raw, 10, 200, false)
+}
 
-		if field == "" || pattern == "" {
-			return errResponse(ctx, fiber.StatusBadRequest, "missing field or pattern")
-		}
+func AllEvents(raw *dbpkg.RawEvents) fiber.Handler {
+	return listEvents(raw, 50, 200, false)
+}
 
-		project := ctx.Query("project")
-		cutoff, _ := parseRange(ctx)
-
-		var sqlPattern string
-		switch matchType {
-		case "ends_with":
-			sqlPattern = "%" + pattern
-		case "starts_with":
-			sqlPattern = pattern + "%"
-		default: // includes
-			sqlPattern = "%" + pattern + "%"
-		}
-
-		expr, ok := metricFieldExpr(field)
-		if !ok {
-			return errResponse(ctx, fiber.StatusBadRequest, "invalid field")
-		}
-
-		limit := 100
-		if s := ctx.Query("limit"); s != "" {
-			if n, err := strconv.Atoi(s); err == nil && n > 0 {
-				if n > 1000 { // Max limit
-					n = 1000
-				}
-				limit = n
-			}
-		}
-		offset := 0
-		if s := ctx.Query("offset"); s != "" {
-			if n, err := strconv.Atoi(s); err == nil && n >= 0 {
-				offset = n
-			}
-		}
-
-		q := db.Model(&dbpkg.Event{}).
-			Where("created_at >= ?", cutoff)
-		q = scopeQueryUserID(q, userID)
-		q = q.Where(expr+" LIKE ?", sqlPattern)
-
-		if project != "" {
-			q = q.Where("project = ?", project)
-		}
-
-		// Fetch limit+1 to determine has_more without an expensive COUNT(*)
-		var events []dbpkg.Event
-		if err := q.Order("created_at DESC").Limit(limit + 1).Offset(offset).Find(&events).Error; err != nil {
-			return errResponse(ctx, fiber.StatusInternalServerError, "failed to search events")
-		}
-
-		hasMore := len(events) > limit
-		if hasMore {
-			events = events[:limit]
-		}
-
-		timeFormat := "12"
-		if user.TimeFormat != "" {
-			timeFormat = user.TimeFormat
-		}
-		rows := make([]recentEvent, 0, len(events))
-		for _, e := range events {
-			rows = append(rows, recentEvent{
-				ID:         e.ID,
-				Time:       handlers.FormatEventTime(e.CreatedAt, timeFormat),
-				CreatedAt:  e.CreatedAt.UTC().Format(time.RFC3339),
-				Method:     e.Method,
-				Route:      e.Route,
-				Status:     e.Status,
-				DurationMs: e.DurationMs,
-				Project:    e.Project,
-				Attributes: e.Attributes,
-			})
-		}
-
-		return jsonResponse(ctx, map[string]any{"events": rows, "total": 0, "has_more": hasMore})
-	}
+func SearchEvents(raw *dbpkg.RawEvents) fiber.Handler {
+	return listEvents(raw, 100, 1000, true)
 }

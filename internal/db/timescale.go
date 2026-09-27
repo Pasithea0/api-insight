@@ -418,14 +418,39 @@ func refreshRollupAggregates(gdb *gorm.DB, start, end time.Time) error {
 		// Explicit casts are required: Postgres cannot infer parameter types
 		// inside CALL the way it does for a SELECT, and without them this
 		// fails with "could not determine data type of parameter $2".
-		if err := gdb.Exec(
+		err := gdb.Exec(
 			"CALL refresh_continuous_aggregate(?::text::regclass, ?::timestamptz, ?::timestamptz)",
 			name, start, end,
-		).Error; err != nil {
-			return fmt.Errorf("refresh %s: %w", name, err)
+		).Error
+		if err == nil {
+			continue
 		}
+		if isConcurrentRefresh(err) {
+			// TimescaleDB allows only one refresh of a given continuous
+			// aggregate at a time. Colliding with the scheduled policy job
+			// is expected, not an error: whoever holds the lock is
+			// materialising the same window, so the data will be there.
+			// Failing here would skip the whole rollup pass and silently
+			// lose an hour of dashboard data.
+			log.Printf("timescale: refresh of %s already in progress; using the existing materialisation", name)
+			continue
+		}
+		return fmt.Errorf("refresh %s: %w", name, err)
 	}
 	return nil
+}
+
+// isConcurrentRefresh recognises TimescaleDB's "another refresh is already
+// running for this continuous aggregate" condition. It arrives as SQLSTATE
+// 55P03 (lock_not_available), so both the code and the message are checked.
+func isConcurrentRefresh(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "concurrent refresh") ||
+		strings.Contains(msg, "55p03") ||
+		strings.Contains(msg, "lock_not_available")
 }
 
 // isHypertable reports whether the given table has been converted.

@@ -15,7 +15,7 @@ import (
 	"apiinsight/internal/http/handlers"
 )
 
-func Export(db *gorm.DB) fiber.Handler {
+func Export(db *gorm.DB, raw *dbpkg.RawEvents) fiber.Handler {
 	return func(ctx *fiber.Ctx) error {
 		user, ok := handlers.MustUser(ctx)
 		if !ok {
@@ -57,35 +57,32 @@ func Export(db *gorm.DB) fiber.Handler {
 
 		switch source {
 		case "recent", "all-events", "search-events":
-			q := db.Model(&dbpkg.Event{}).Where("created_at >= ?", cutoff)
-			q = scopeQueryUserID(q, userID)
-			if project != "" {
-				q = q.Where("project = ?", project)
+			// Exported through the same resolver as the on-screen tables, so
+			// a CSV always matches what the dashboard showed.
+			q := dbpkg.EventQuery{
+				UserID:    userID,
+				Project:   project,
+				Status:    status,
+				AttrKey:   attrKey,
+				AttrValue: attrValue,
+				Cutoff:    cutoff,
+				Limit:     limit,
+				Offset:    offset,
 			}
-			q = applyMetricsFilters(q, status, attrKey, attrValue)
-
 			if source == "search-events" {
 				field := ctx.Query("field")
 				pattern := ctx.Query("pattern")
-				matchType := ctx.Query("type")
 				if field != "" && pattern != "" {
-					var sqlPattern string
-					switch matchType {
-					case "ends_with":
-						sqlPattern = "%" + pattern
-					case "starts_with":
-						sqlPattern = pattern + "%"
-					default:
-						sqlPattern = "%" + pattern + "%"
+					if _, ok := dbpkg.PostgresFieldExpr(field); !ok {
+						return nil
 					}
-					if expr, ok := metricFieldExpr(field); ok {
-						q = q.Where(expr+" LIKE ?", sqlPattern)
-					}
+					q.Field = field
+					q.Pattern = likePattern(ctx.Query("type"), pattern)
 				}
 			}
 
-			var events []dbpkg.Event
-			if err := q.Order("created_at DESC").Limit(limit).Offset(offset).Find(&events).Error; err != nil {
+			events, _, err := raw.QueryEvents(ctx.Context(), ctx.Query("store"), q)
+			if err != nil {
 				log.Printf("failed to query events for export: %v", err)
 				return nil
 			}

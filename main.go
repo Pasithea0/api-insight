@@ -17,7 +17,7 @@ import (
 	"apiinsight/internal/cache"
 	"apiinsight/internal/clickhouse"
 	"apiinsight/internal/config"
-	"apiinsight/internal/db"
+	dbpkg "apiinsight/internal/db"
 	"apiinsight/internal/http/handlers"
 	"apiinsight/internal/http/handlers/metrics"
 	appmw "apiinsight/internal/http/middleware"
@@ -90,20 +90,20 @@ func main() {
 	logger.RouteStandardLog()
 	zlog := logger.Log
 
-	sqlDB, err := db.Connect(cfg)
+	sqlDB, err := dbpkg.Connect(cfg)
 	if err != nil {
 		zlog.Fatal().Err(err).Msg("failed to connect database")
 	}
 
-	db.StartRetentionWorker(sqlDB)
-	db.StartAggregationWorker(sqlDB)
+	dbpkg.StartRetentionWorker(sqlDB)
+	dbpkg.StartAggregationWorker(sqlDB)
 
-	if err := db.EnsureBootstrapAdmin(sqlDB, cfg); err != nil {
+	if err := dbpkg.EnsureBootstrapAdmin(sqlDB, cfg); err != nil {
 		zlog.Fatal().Err(err).Msg("failed to ensure bootstrap admin")
 	}
 
 	if cfg.InternalAPIKey != "" {
-		if err := db.EnsureBootstrapAPIKey(sqlDB, cfg); err != nil {
+		if err := dbpkg.EnsureBootstrapAPIKey(sqlDB, cfg); err != nil {
 			zlog.Warn().Err(err).Msg("failed to ensure bootstrap API key (will be created on first settings page load)")
 		} else {
 			zlog.Info().Msg("internal API key configured and associated with admin user")
@@ -134,6 +134,20 @@ func main() {
 	if chClient != nil {
 		batchWriter.SetSink(chClient)
 	}
+
+	// Raw-event reads. Postgres is the system of record; ClickHouse is used
+	// only when it is both wired in and selected as the read source, and any
+	// store error falls back to Postgres so the dashboard degrades instead
+	// of going blank.
+	var chReader dbpkg.EventReader
+	if chClient != nil {
+		chReader = chClient
+	}
+	rawEvents := dbpkg.NewRawEvents(dbpkg.NewPostgresReader(sqlDB), chReader, cfg.ClickHouseReadSource)
+	zlog.Info().
+		Str("default_source", rawEvents.DefaultSource()).
+		Bool("clickhouse_available", rawEvents.ClickHouseAvailable()).
+		Msg("raw event reads configured")
 
 	app := fiber.New(fiber.Config{
 		ReadTimeout:  10 * time.Second,
@@ -235,11 +249,11 @@ func main() {
 	app.Get("/v1/metrics/pattern-counts", adminAuth(metrics.PatternCounts(sqlDB)))
 	app.Get("/v1/metrics/top-routes", adminAuth(metrics.TopRoutes(sqlDB)))
 	app.Get("/v1/public/top-endpoints", metrics.PublicTopRoutes(sqlDB))
-	app.Get("/v1/metrics/recent", adminAuth(metrics.RecentEvents(sqlDB)))
-	app.Get("/v1/metrics/all-events", adminAuth(metrics.AllEvents(sqlDB)))
-	app.Get("/v1/metrics/search-events", adminAuth(metrics.SearchEvents(sqlDB)))
-	app.Get("/v1/metrics/export", adminAuth(metrics.Export(sqlDB)))
-	app.Get("/v1/metrics/event/:id", adminAuth(handlers.EventDetail(sqlDB)))
+	app.Get("/v1/metrics/recent", adminAuth(metrics.RecentEvents(rawEvents)))
+	app.Get("/v1/metrics/all-events", adminAuth(metrics.AllEvents(rawEvents)))
+	app.Get("/v1/metrics/search-events", adminAuth(metrics.SearchEvents(rawEvents)))
+	app.Get("/v1/metrics/export", adminAuth(metrics.Export(sqlDB, rawEvents)))
+	app.Get("/v1/metrics/event/:id", adminAuth(handlers.EventDetail(rawEvents)))
 
 	// Graceful shutdown
 	quit := make(chan os.Signal, 1)

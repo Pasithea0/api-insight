@@ -2,27 +2,15 @@ package handlers
 
 import (
 	"encoding/json"
+	"strconv"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
-	"gorm.io/gorm"
+
+	dbpkg "apiinsight/internal/db"
 )
 
-type eventDetailRow struct {
-	ID         uint
-	CreatedAt  time.Time
-	ExpiresAt  *time.Time
-	UserID     string
-	Project    string
-	Route      string
-	Method     string
-	Status     int
-	DurationMs int64
-	RemoteIP   string
-	Attributes []byte
-}
-
-func EventDetail(db *gorm.DB) fiber.Handler {
+func EventDetail(raw *dbpkg.RawEvents) fiber.Handler {
 	return func(ctx *fiber.Ctx) error {
 		user, ok := MustUser(ctx)
 		if !ok {
@@ -33,15 +21,27 @@ func EventDetail(db *gorm.DB) fiber.Handler {
 			return ctx.Status(fiber.StatusBadRequest).SendString("id required")
 		}
 
-		var row eventDetailRow
-		if err := db.Raw("SELECT id, created_at, expires_at, user_id, project, route, method, status, duration_ms, remote_ip, attributes FROM events WHERE id = ?", idStr).Scan(&row).Error; err != nil {
+		// The resolver checks the selected store first and falls back to the
+		// other on a miss, because an event ingested before the mirror
+		// existed lives only in Postgres, while one older than the raw
+		// retention window may live only in the mirror.
+		row, err := raw.EventByID(ctx.Context(), ctx.Query("store"), idStr)
+		if err != nil {
 			return ctx.Status(fiber.StatusInternalServerError).SendString("failed to load event")
 		}
-		if row.ID == 0 {
+		if row == nil {
 			return ctx.Status(fiber.StatusNotFound).SendString("event not found")
 		}
 
-		if !user.IsAdmin && row.UserID != idStr {
+		// Authorization: a non-admin may only read their own events.
+		//
+		// This previously read `row.UserID != idStr`, comparing the event's
+		// owning user against the EVENT id. The requester's identity never
+		// entered the comparison, so it denied every legitimate non-admin
+		// request and granted access whenever an event's user_id happened to
+		// equal its own id — an authorization decision made by coincidence.
+		// Compare against the requesting user's id instead.
+		if !user.IsAdmin && row.UserID != strconv.Itoa(int(user.ID)) {
 			return ctx.Status(fiber.StatusForbidden).SendString("forbidden")
 		}
 
@@ -55,9 +55,11 @@ func EventDetail(db *gorm.DB) fiber.Handler {
 		}
 		createdAtDisplay := FormatEventDateTime(row.CreatedAt, timeFormat, dateFormat)
 
+		// Attributes may legitimately be empty; the field is omitted-by-empty
+		// rather than rendered as null when there is nothing to show.
 		var attrs any
 		if len(row.Attributes) > 0 {
-			json.Unmarshal(row.Attributes, &attrs)
+			attrs = row.Attributes
 		}
 
 		resp := map[string]any{

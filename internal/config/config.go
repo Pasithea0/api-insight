@@ -92,6 +92,15 @@ type Config struct {
 	// ClickHouseRetentionDays is the additional global age TTL applied to
 	// the ClickHouse events table. 0 means rely on per-row expires_at only.
 	ClickHouseRetentionDays int
+
+	// ClickHouseReadSource selects which store serves the raw-event
+	// dashboard endpoints (recent / all-events / search / export / event
+	// detail): "postgres" (default) or "clickhouse". It is separate from
+	// ClickHouseEnabled because writing the mirror and reading from it are
+	// different decisions — the mirror has no backfill, so for the first
+	// days after it is enabled it holds less history than Postgres.
+	// Overridable per request with ?store=clickhouse|postgres.
+	ClickHouseReadSource string
 }
 
 // Load reads configuration from environment variables and applies
@@ -163,6 +172,10 @@ func Load() *Config {
 		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
 			cfg.ClickHouseRetentionDays = n
 		}
+	}
+	cfg.ClickHouseReadSource = strings.ToLower(strings.TrimSpace(getenv("APP_CLICKHOUSE_READ_SOURCE", "postgres")))
+	if cfg.ClickHouseReadSource != "clickhouse" {
+		cfg.ClickHouseReadSource = "postgres"
 	}
 
 	cfg.SessionSecret = strings.TrimSpace(os.Getenv("APP_SESSION_SECRET"))
