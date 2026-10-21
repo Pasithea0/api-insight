@@ -35,7 +35,19 @@ rollups, ClickHouse keeps the cheap long tail.
 - `internal/db/timescale.go` *(new)* — extension detection, primary-key
   rewrite, `create_hypertable`, columnstore policy, chunk-drop retention,
   continuous aggregates.
-- `internal/db/retention.go` — **bug fix**, see below.
+- `internal/db/retention.go` — **bug fix**, see below. Also the write side of a
+  retention edit: `ApplyProjectRetention` deletes a project's events that are
+  already older than a shortened window and moves every surviving row onto the
+  new expiry, because ingest stamps `expires_at` at write time and a key-only
+  UPDATE would leave the old promise standing.
+- `internal/http/handlers/apikeys.go` — `/admin/apikeys/set-retention`. The key
+  is saved synchronously, the reconciliation runs in a background goroutine, and
+  `EffectiveProjectRetention` widens the window to the longest one any key that
+  shares the project name still asks for (they share one event namespace, so a
+  shorter sibling key must not delete what a longer one keeps).
+- `internal/clickhouse/retention.go` — the mirror's half of a retention edit:
+  two `ALTER ...` mutations, because the mirror can be the store the raw-event
+  endpoints read from and would otherwise keep serving rows Postgres dropped.
 - `internal/db/aggregation.go` — rollup worker reads the continuous
   aggregates when available; `jsonb_typeof` guard fix.
 - `internal/db/migrations.go` — no longer issues `CREATE INDEX CONCURRENTLY`
@@ -218,7 +230,15 @@ failure.
 - **Columnstore must outlive per-key retention.** Deleting individual rows
   from a columnstore chunk works (TimescaleDB decompresses as needed) but is
   expensive. Keep `APP_TIMESCALE_COLUMNSTORE_AFTER` above your longest
-  per-key retention window.
+  per-key retention window. This applies to retention *edits* too: shortening a
+  window issues batched `DELETE`s against rows that may already be compressed,
+  and the pass runs in the background precisely so that cost is not paid by the
+  request.
+- **A ClickHouse retention edit is asynchronous.** It is two `ALTER ...`
+  mutations; success means "queued", not "the rows are gone", so the mirror can
+  briefly still answer with rows Postgres has already deleted. Growing a window
+  also cannot bring back rows the mirror's TTL has already removed. Postgres
+  remains the system of record; the mirror is best-effort by design.
 - **ClickHouse TTL needs `ifNull`.** `TTL expires_at DELETE` is rejected
   (`Code 450 BAD_TTL_EXPRESSION`) because a TTL expression cannot be
   `Nullable`. The DDL wraps it: `TTL ifNull(expires_at, <far future>) DELETE

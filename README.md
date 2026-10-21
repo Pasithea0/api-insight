@@ -115,6 +115,31 @@ Public endpoints are intentionally limited to safe aggregated data. The current 
 
 ---
 
+## Editing a project's retention
+
+A project's retention can be changed from Settings at any time, and the change
+applies to data that is already stored, not just to future events:
+
+- shortening the window deletes that project's events which are now outside it,
+  and moves every surviving event onto the new window;
+- lengthening it deletes nothing and moves the surviving expiries out.
+
+Without that reconciliation a shortened window would be a lie: each event
+carries the expiry it was stamped with when it arrived, so going from 90 to 7
+days would have left week-old data sitting for another 83 days.
+
+The API key is saved before the response goes out, so what the next ingest
+stamps is correct immediately; the cleanup of the backlog runs in the
+background and is logged. Lowering the value asks for confirmation in the
+console, since it deletes data.
+
+A project name can have more than one key (prod, staging, dev). Those keys share
+one event namespace, so a change is reconciled to the longest window any of them
+still asks for: shortening one key can never delete data a sibling key promised
+to keep.
+
+---
+
 ## Development
 
 ### Prerequisites

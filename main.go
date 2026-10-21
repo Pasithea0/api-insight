@@ -143,6 +143,16 @@ func main() {
 	if chClient != nil {
 		chReader = chClient
 	}
+
+	// Retention edits are mirrored as well. If ClickHouse is the raw-event read
+	// source, a shortened window has to be enforced there too, or the mirror
+	// keeps serving rows Postgres has already dropped. The concrete client is
+	// only assigned to the interface when it exists: a nil *clickhouse.Client
+	// stored in a non-nil interface would panic on the first method call.
+	var retentionMirror handlers.RetentionMirror
+	if chClient != nil {
+		retentionMirror = chClient
+	}
 	rawEvents := dbpkg.NewRawEvents(dbpkg.NewPostgresReader(sqlDB), chReader, cfg.ClickHouseReadSource)
 	zlog.Info().
 		Str("default_source", rawEvents.DefaultSource()).
@@ -225,6 +235,7 @@ func main() {
 	app.Post("/admin/apikeys/set-active", adminAuth(handlers.SetActiveAPIKey(sqlDB, cfg)))
 	app.Post("/admin/apikeys/set-public", adminAuth(handlers.SetPublicAPIKeyState(sqlDB, cfg)))
 	app.Post("/admin/apikeys/rotate-public", adminAuth(handlers.RotatePublicAPIKey(sqlDB, cfg)))
+	app.Post("/admin/apikeys/set-retention", adminAuth(handlers.SetAPIKeyRetention(sqlDB, cfg, retentionMirror)))
 
 	app.Get("/admin/healthz", adminAuth(requireAdmin(func(c *fiber.Ctx) error {
 		return c.SendString("admin ok")

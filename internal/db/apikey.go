@@ -2,6 +2,8 @@ package db
 
 import (
 	"time"
+
+	"gorm.io/gorm"
 )
 
 // APIKey represents an API key for ingesting events from external services.
@@ -40,4 +42,40 @@ type APIKey struct {
 
 	// User is the owner of this API key.
 	User User `gorm:"foreignKey:UserID"`
+}
+
+// EffectiveProjectRetention returns the retention window, in days, that a
+// project's event namespace has to honour given every key that writes into it.
+//
+// Events are stamped with the key's NAME, not its id (see IngestHandler), so
+// two keys that share a name — the usual case being one project in prod and
+// staging — share ONE event namespace while each carries its own
+// RetentionDays. Editing one of them must therefore never shorten the
+// namespace to that single key's window: a sibling key may still have promised
+// to keep those rows longer, and reconciling to the shorter value would delete
+// data the operator never asked to drop. The window enforced is the longest one
+// any key with that name still asks for, with fallback standing in for keys
+// that defer to the configured default (0).
+func EffectiveProjectRetention(db *gorm.DB, userID uint, project string, fallback int) (int, error) {
+	var keys []APIKey
+	if err := db.Select("retention_days").
+		Where("user_id = ? AND name = ?", userID, project).
+		Find(&keys).Error; err != nil {
+		return 0, err
+	}
+
+	window := 0
+	for _, k := range keys {
+		eff := k.RetentionDays
+		if eff <= 0 {
+			eff = fallback
+		}
+		if eff > window {
+			window = eff
+		}
+	}
+	if window <= 0 {
+		window = fallback
+	}
+	return window, nil
 }

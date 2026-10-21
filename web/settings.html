@@ -52,7 +52,7 @@
   <div class="panel-header">
     <div>
       <div class="panel-title">Projects</div>
-      <div class="panel-subtitle">Each project has its own write key and optional public API access key.</div>
+      <div class="panel-subtitle">Each project has its own write key and optional public API access key. Retention is editable per project.</div>
     </div>
   </div>
   <table class="table">
@@ -73,11 +73,30 @@
           <td>{{.Name}}</td>
           <td><span class="badge badge-muted">{{.Environment}}</span></td>
           <td>
-            {{if gt .RetentionDays 0}}
-              {{.RetentionDays}} days
-            {{else}}
-              Default ({{$.MaxRetentionDays}} days)
-            {{end}}
+            <form
+              method="post"
+              action="/admin/apikeys/set-retention"
+              data-retention-form
+              data-project="{{.Name}}"
+              data-effective-days="{{if gt .RetentionDays 0}}{{.RetentionDays}}{{else}}{{$.MaxRetentionDays}}{{end}}"
+              style="display: flex; gap: 0.3rem; align-items: center;"
+            >
+              <input type="hidden" name="id" value="{{.ID}}" />
+              <input
+                name="retention_days"
+                type="number"
+                min="0"
+                max="{{$.MaxRetentionDays}}"
+                value="{{if gt .RetentionDays 0}}{{.RetentionDays}}{{else}}{{$.MaxRetentionDays}}{{end}}"
+                title="Days to keep this project's events. Lowering it deletes older events."
+                style="width: 4.5rem; font-size: 0.75rem; padding: 0.15rem 0.3rem;"
+                required
+              />
+              <button type="submit" style="font-size: 0.5rem; padding: 0.1rem 0.2rem;">Save</button>
+            </form>
+            <div style="color: var(--muted-soft); font-size: 0.7rem; margin-top: 0.25rem;">
+              {{if gt .RetentionDays 0}}{{.RetentionDays}} days{{else}}Default ({{$.MaxRetentionDays}} days){{end}}
+            </div>
           </td>
           <td>
             <div style="display: flex; flex-direction: column; gap: 0.35rem; align-items: flex-start;">
@@ -212,4 +231,30 @@
     </button>
   </form>
 </div>
+
+<script>
+  // Lowering a project's retention deletes its older events, so the one
+  // direction that destroys data is confirmed explicitly. Raising it is not
+  // destructive and saves without a prompt.
+  (function () {
+    var forms = document.querySelectorAll('form[data-retention-form]');
+    for (var i = 0; i < forms.length; i++) {
+      forms[i].addEventListener('submit', function (event) {
+        var form = event.currentTarget;
+        var next = parseInt(form.querySelector('input[name="retention_days"]').value, 10);
+        var current = parseInt(form.getAttribute('data-effective-days'), 10);
+        if (!isFinite(next) || !isFinite(current) || next >= current) {
+          return;
+        }
+        var days = next === 1 ? '1 day' : next + ' days';
+        var message =
+          'Keep ' + days + ' of events for "' + form.getAttribute('data-project') + '"?\n\n' +
+          'Events older than ' + days + ' will be permanently deleted.';
+        if (!window.confirm(message)) {
+          event.preventDefault();
+        }
+      });
+    }
+  })();
+</script>
 {{end}}
