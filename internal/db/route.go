@@ -5,57 +5,49 @@ import (
 	"strings"
 )
 
-// maxEndpointBytes bounds a stored endpoint. A route is caller-supplied, and
-// the rollup tables are keyed on it, so a pathological multi-kilobyte "path"
-// would be paid for once per hour per distinct value. Truncation keeps the
-// cardinality of a hostile client bounded; the raw path is kept in full on the
-// event itself.
-const maxEndpointBytes = 512
+// maxMetricLabelBytes bounds a route label. A route is caller-supplied, so
+// without a cap a single pathological request could pin a large string in the
+// metrics registry for the life of the process.
+const maxMetricLabelBytes = 256
 
-// NormalizeEndpoint reduces a request path to the endpoint it addresses.
+// MetricRouteLabel reduces a route to a bounded value suitable for use as a
+// Prometheus label.
 //
-// A route in an analytics service means a low-cardinality handle for an
-// endpoint, the thing you group by. It is NOT the request URL. Storing the URL
-// makes every request its own route, and because the rollup tables are keyed
-// on (user, project, route, hour) that turns them into a copy of the event
-// stream — one row per request, plus a unique index to enforce uniqueness on
-// values that were never equal in the first place.
+// This is a metrics-side concern ONLY. It is never applied to what gets
+// stored: Event.Route keeps the full request path, query string included, at
+// the operator's direction, because being able to search a route by a real
+// value — a title id, a season, an API key — is the point, and it is also what
+// lets the dashboard show what people are actually watching rather than
+// "/media".
 //
-// That is not hypothetical: this service stored
+// The two cardinalities are different problems, and conflating them is how a
+// good fix becomes a regression. Stripping the query string from the STORED
+// route was implemented and reverted at the operator's direction; this
+// function exists so the metrics problem can be solved without touching
+// storage at all:
 //
-//	/v4/media?tvdb_id=269653&season=8&episode=2&tvdb_episode_id=7928568&duration_ms=1293321
+//   - storage cardinality is a disk and index cost, paid per event, and it is
+//     accepted here;
+//   - label cardinality is RAM, paid for the life of the process. A Prometheus
+//     counter keeps one time series per distinct label combination and never
+//     releases it, so a label whose value is unique per request is unbounded
+//     memory. This service reached millions of distinct routes and ~25GB RSS
+//     that way, on counters that are not even scraped.
 //
-// and 160,890 such rows in a single hour collapsed to 21 distinct paths —
-// a 7,661x reduction — once the query string was ignored. The 185 GB of
-// rollup tables it produced was 2.6x the raw event table it summarised.
+// So the label is bounded and the stored route is not. Dropping the query
+// string, the fragment, any scheme/host, and trailing slashes is enough to
+// hold the label count to the number of distinct endpoints.
 //
-// What is stripped, and why:
-//
-//   - the query string, because a per-request parameter (a resource id, a
-//     timestamp, a client-measured duration) makes every request unique, and
-//     the parameters worth grouping by belong in attributes;
-//   - the fragment, which is never sent to the server anyway;
-//   - scheme and host, when a client reports a full URL instead of a path;
-//   - trailing slashes, which are the same endpoint and must not split the
-//     rollup in two.
-//
-// What is deliberately NOT stripped: anything else. Collapsing path segments
-// (turning /v1/metrics/traffic into /v1/metrics/*) would merge genuinely
-// different endpoints, and unlike the query string there is no way to tell
-// which segments are identifiers and which are names. Callers that know their
-// own templates should send `route` explicitly instead.
-//
-// Returns "" only for empty input, so callers can tell "no path was sent" from
-// the root endpoint "/".
-func NormalizeEndpoint(raw string) string {
+// Returns "" only for empty input, so callers can tell "no path" from the root
+// endpoint "/".
+func MetricRouteLabel(raw string) string {
 	s := strings.TrimSpace(raw)
 	if s == "" {
 		return ""
 	}
 
-	// A client may report a full URL rather than a path. Its scheme and host
-	// are not part of the endpoint, and leaving them in would split the same
-	// endpoint by hostname.
+	// A client may report a full URL. Its scheme and host are not part of the
+	// endpoint, and leaving them in would split one endpoint by hostname.
 	if strings.Contains(s, "://") {
 		if u, err := url.Parse(s); err == nil && u.Path != "" {
 			s = u.Path
@@ -81,7 +73,6 @@ func NormalizeEndpoint(raw string) string {
 		}
 	}
 
-	// Trailing slashes address the same endpoint as the bare path.
 	if len(s) > 1 {
 		if trimmed := strings.TrimRight(s, "/"); trimmed == "" {
 			s = "/"
@@ -93,8 +84,8 @@ func NormalizeEndpoint(raw string) string {
 	if s == "" {
 		return "/"
 	}
-	if len(s) > maxEndpointBytes {
-		s = s[:maxEndpointBytes]
+	if len(s) > maxMetricLabelBytes {
+		s = s[:maxMetricLabelBytes]
 	}
 	return s
 }

@@ -12,16 +12,11 @@ import (
 )
 
 type recentEvent struct {
-	ID        uint   `json:"id"`
-	Time      string `json:"time"`       // legacy, pre-formatted server time
-	CreatedAt string `json:"created_at"` // ISO 8601 UTC for client-side local formatting
-	Method    string `json:"method"`
-	Route     string `json:"route"`
-	// Path is the raw request path as the client reported it, query string
-	// included, when it differs from the (normalised) route. Included so a
-	// request can still be identified exactly while every grouping and chart
-	// uses the low-cardinality route.
-	Path       string `json:"path,omitempty"`
+	ID         uint   `json:"id"`
+	Time       string `json:"time"`       // legacy, pre-formatted server time
+	CreatedAt  string `json:"created_at"` // ISO 8601 UTC for client-side local formatting
+	Method     string `json:"method"`
+	Route      string `json:"route"`
 	Status     int    `json:"status"`
 	DurationMs int64  `json:"duration_ms"`
 	Project    string `json:"project"`
@@ -115,7 +110,6 @@ func listEvents(raw *dbpkg.RawEvents, defaultLimit, maxLimit int, searchable boo
 				CreatedAt:  e.CreatedAt.UTC().Format(time.RFC3339),
 				Method:     e.Method,
 				Route:      e.Route,
-				Path:       rawPathFor(e),
 				Status:     e.Status,
 				DurationMs: e.DurationMs,
 				Project:    e.Project,
@@ -142,17 +136,6 @@ func likePattern(matchType, pattern string) string {
 	default: // includes
 		return "%" + pattern + "%"
 	}
-}
-
-// rawPathFor returns the event's original path, but only when it says
-// something the route does not. Events stored before routes were normalised
-// have no Path, and an event whose path and route are identical would otherwise
-// repeat the same string in every row of the dashboard's event table.
-func rawPathFor(e dbpkg.Event) string {
-	if e.Path == "" || e.Path == e.Route {
-		return ""
-	}
-	return e.Path
 }
 
 func RecentEvents(raw *dbpkg.RawEvents) fiber.Handler {

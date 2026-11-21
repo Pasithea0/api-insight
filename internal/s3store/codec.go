@@ -30,8 +30,7 @@ type wireEvent struct {
 	E  *int64         `json:"e,omitempty"` // expires_at, unix milliseconds UTC
 	U  string         `json:"u,omitempty"` // user_id
 	P  string         `json:"p,omitempty"` // project
-	R  string         `json:"r,omitempty"` // route: the endpoint, query string stripped
-	F  string         `json:"f,omitempty"` // full request path as reported, query string included
+	R  string         `json:"r,omitempty"` // route: the full request path, query string included
 	M  string         `json:"m,omitempty"` // method
 	S  int            `json:"s,omitempty"` // status
 	D  int64          `json:"d,omitempty"` // duration_ms
@@ -92,7 +91,6 @@ func toWire(e dbpkg.Event) wireEvent {
 		U:  e.UserID,
 		P:  e.Project,
 		R:  e.Route,
-		F:  e.Path,
 		M:  e.Method,
 		S:  e.Status,
 		D:  e.DurationMs,
@@ -115,7 +113,6 @@ func fromWire(w wireEvent) dbpkg.Event {
 		UserID:     w.U,
 		Project:    w.P,
 		Route:      w.R,
-		Path:       w.F,
 		Method:     w.M,
 		Status:     w.S,
 		DurationMs: w.D,

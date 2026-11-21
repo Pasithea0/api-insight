@@ -32,21 +32,26 @@ type Event struct {
 
 	Project string `gorm:"index;index:idx_events_user_project_created_at,priority:2"`
 
-	// Route is the endpoint this event hit, with the query string removed
-	// (see NormalizeEndpoint). It is the grouping key for every rollup table,
-	// so it has to stay low-cardinality: grouping on the full URL made
-	// route_buckets a per-request copy of this table and filled the disk.
-	Route string `gorm:"index"`
-
-	// Path is the request path the client reported, query string and all.
+	// Route is the full request path as reported by the client, query string
+	// included, and that is deliberate rather than an oversight.
 	//
-	// It is deliberately NOT indexed and NOT aggregated. Its cardinality is
-	// per-request, so it is the one field that would turn a rollup back into
-	// the event stream it summarises. It is kept because it is the source
-	// data Route is derived from: if the normalisation rule ever changes, the
-	// new rule can be replayed over history rather than only applying to new
-	// events.
-	Path string
+	// Every distinct query-parameter combination is its own route. That is
+	// what lets a route be searched by a real value — a title id, a season, an
+	// API key — directly, with no synthetic attribute to reconstruct and no
+	// dependence on an aggregation having run first. It is also what lets the
+	// dashboard show what people are actually watching instead of "/media".
+	//
+	// The cost is real: route_buckets inherits this cardinality, at roughly
+	// 10-15M rows per day, and every GROUP BY route pays it. That is accepted,
+	// and it is why the rollup tables carry their own retention (see
+	// RollupWindows) rather than being kept forever.
+	//
+	// Normalising this field at ingest — stripping the query string, whether
+	// into a separate column or a synthetic attributes["query"] — was
+	// implemented and reverted at the operator's direction. Do not
+	// re-introduce it, and do not read a high-cardinality route_buckets as a
+	// defect to be fixed by degrading this field.
+	Route string `gorm:"index"`
 
 	Method string `gorm:"index"`
 	Status int    `gorm:"index;index:idx_events_user_status_created_at,priority:2"`

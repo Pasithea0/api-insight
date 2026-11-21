@@ -187,13 +187,16 @@ not events, and nothing pruned them until two knobs existed for it:
 
 That gap is not academic. One deployment reached **185 GB of rollups behind a
 70 GB events table** — clearing the events freed less than a third of the disk.
-The cause was `route` holding the full request URL rather than an endpoint, so
-every request was its own route: 160,890 rows in one hour that collapse to 21
-distinct paths. Routes are now normalised to endpoints, the request is kept
-verbatim in a separate `path` field, and the tables grow at ~1 MB/day instead
-of ~6 GB/day.
 
-Reasoning, measurements and the disk-reclaim procedures:
+The route-level tables are large because `route` is the full request path
+including its query string, which is deliberate: it is what lets you search a
+route by a real value, and what lets the dashboard show what people are
+watching rather than `/media`. The cardinality cost is inherited by
+`route_buckets` (~10-15M rows/day) and is bounded with retention, not by
+stripping the stored route — that change was made and reverted.
+
+Measurements, the retention knobs, the disk-reclaim procedures, and what
+actually makes Top endpoints slow (and what does not fix it):
 [`docs/rollups.md`](docs/rollups.md).
 
 ---

@@ -280,8 +280,7 @@ func TestCodecRoundTrip(t *testing.T) {
 			ExpiresAt:  &expires,
 			UserID:     "7",
 			Project:    "payments-api",
-			Route:      "/api/orders",
-			Path:       "/api/orders?page=2",
+			Route:      "/api/orders?page=2",
 			Method:     "POST",
 			Status:     500,
 			DurationMs: 1234,
@@ -308,12 +307,7 @@ func TestCodecRoundTrip(t *testing.T) {
 		t.Errorf("identity fields did not survive: %+v", got)
 	}
 	if got.Route != in[0].Route {
-		t.Errorf("route = %q, want %q", got.Route, in[0].Route)
-	}
-	// The raw request path is a separate field precisely so the rollup key can
-	// be normalised without losing what the client actually sent.
-	if got.Path != in[0].Path {
-		t.Errorf("path = %q, want %q (the request must be preserved verbatim)", got.Path, in[0].Path)
+		t.Errorf("route = %q, want %q (the full request path must be preserved)", got.Route, in[0].Route)
 	}
 	if !got.CreatedAt.Equal(in[0].CreatedAt) {
 		t.Errorf("created_at = %s, want %s", got.CreatedAt, in[0].CreatedAt)

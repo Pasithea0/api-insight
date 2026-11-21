@@ -3,7 +3,6 @@ package handlers
 import (
 	"encoding/json"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
@@ -45,14 +44,8 @@ func InitPrometheusMetrics() {
 }
 
 type IngestEvent struct {
-	Timestamp *time.Time `json:"timestamp,omitempty"`
-	// Path is the request path, normally with its query string.
-	Path string `json:"path"`
-	// Route is an optional endpoint the client has already templated (for
-	// example the framework's route pattern). When present it is used as-is
-	// and Path is only kept for display, which is how a client that knows its
-	// own routes avoids relying on the normalisation heuristic entirely.
-	Route      string         `json:"route,omitempty"`
+	Timestamp  *time.Time     `json:"timestamp,omitempty"`
+	Path       string         `json:"path"`
 	Method     string         `json:"method,omitempty"`
 	Status     int            `json:"status,omitempty"`
 	UserID     string         `json:"user_id,omitempty"`
@@ -97,23 +90,8 @@ func IngestHandler(db *gorm.DB, cfg *config.Config, batchWriter *BatchWriter) fi
 		records := make([]dbpkg.Event, 0, len(payload.Events))
 
 		for _, ev := range payload.Events {
-			// Everything that groups events — the rollup tables, the
-			// Prometheus label values — keys on the route, so the route has to
-			// be an endpoint rather than the request URL. See
-			// dbpkg.NormalizeEndpoint: a query string in this field made every
-			// request its own route.
-			rawPath := strings.TrimSpace(ev.Path)
-			endpoint := dbpkg.NormalizeEndpoint(ev.Route)
-			if endpoint == "" {
-				endpoint = dbpkg.NormalizeEndpoint(rawPath)
-			}
-			if endpoint == "" {
-				// Neither a path nor a route: there is nothing to attribute
-				// this request to.
+			if ev.Path == "" {
 				continue
-			}
-			if rawPath == "" {
-				rawPath = endpoint
 			}
 
 			createdAt := now
@@ -148,8 +126,7 @@ func IngestHandler(db *gorm.DB, cfg *config.Config, batchWriter *BatchWriter) fi
 				ExpiresAt:  expiresAt,
 				UserID:     ownerUserID,
 				Project:    project,
-				Route:      endpoint,
-				Path:       rawPath,
+				Route:      ev.Path,
 				Method:     ev.Method,
 				Status:     status,
 				DurationMs: durationMs,
@@ -158,14 +135,16 @@ func IngestHandler(db *gorm.DB, cfg *config.Config, batchWriter *BatchWriter) fi
 			}
 			records = append(records, rec)
 
-			// The label values are the endpoint, not the path. Prometheus
-			// stores one time series per distinct label combination, so a
-			// label that is unique per request grows this process's own memory
-			// without bound — the same cardinality explosion that filled the
-			// rollup tables, in a place that is harder to notice.
-			labels := []string{project, endpoint, ev.Method, strconv.Itoa(status)}
+			// The stored route is kept verbatim, but the metric label is a
+			// bounded reduction of it. A Prometheus counter holds one time
+			// series per distinct label combination for the life of the
+			// process, so a label whose value is unique per request is
+			// unbounded memory — not a disk cost, and not something to fix by
+			// degrading what gets stored.
+			label := dbpkg.MetricRouteLabel(ev.Path)
+			labels := []string{project, label, ev.Method, strconv.Itoa(status)}
 			requestsTotal.WithLabelValues(labels...).Inc()
-			requestDurationBuckets.WithLabelValues(project, endpoint, ev.Method).
+			requestDurationBuckets.WithLabelValues(project, label, ev.Method).
 				Observe(float64(durationMs) / 1000.0)
 		}
 
