@@ -79,25 +79,31 @@ func runRetentionOnce(db *gorm.DB) error {
 // project" means the longest window any key asks for. Shorter per-project
 // windows do not need this pass at all: the reader applies them as it reads,
 // which is the only way to honour a window on data that cannot be rewritten.
-func StartRetentionWorker(db *gorm.DB, objects ObjectRetention, windows ProjectRetentionLookup) {
+//
+// The pre-aggregated tables are pruned by the same worker but under their own
+// windows, and that pass runs whatever the event store is: they are always in
+// Postgres, and skipping them in object-store mode is exactly how 185 GB of
+// rollups accumulated behind an events table of 70 GB.
+func StartRetentionWorker(db *gorm.DB, objects ObjectRetention, windows ProjectRetentionLookup, rollups RollupWindows) {
 	go func() {
 		run := func() {
-			if objects != nil {
+			switch {
+			case objects != nil:
 				runObjectRetention(objects, windows)
-				return
-			}
-			if windows != nil && windows.MaxRetentionDays() <= 0 {
+			case windows != nil && windows.MaxRetentionDays() <= 0:
 				// Unlimited retention with the events in Postgres. There is
 				// nothing to delete, and running the pass would be a full
 				// scan that removes nothing. Rows ingested while retention
 				// was still limited keep whatever expiry they were stamped
 				// with, though, so this only stops *new* data from expiring.
 				log.Printf("retention: unlimited (APP_RETENTION_DAYS=0) — rows already stamped with an expiry still expire; only new events are kept forever")
-				return
+			default:
+				if err := runRetentionOnce(db); err != nil {
+					log.Printf("retention cleanup error: %v", err)
+				}
 			}
-			if err := runRetentionOnce(db); err != nil {
-				log.Printf("retention cleanup error: %v", err)
-			}
+
+			runRollupRetention(db, rollups)
 		}
 
 		run()

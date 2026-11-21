@@ -31,9 +31,25 @@ type Event struct {
 	UserID string `gorm:"index;index:idx_events_user_created_at,priority:1;index:idx_events_user_project_created_at,priority:1;index:idx_events_user_status_created_at,priority:1"`
 
 	Project string `gorm:"index;index:idx_events_user_project_created_at,priority:2"`
-	Route   string `gorm:"index"`
-	Method  string `gorm:"index"`
-	Status  int    `gorm:"index;index:idx_events_user_status_created_at,priority:2"`
+
+	// Route is the endpoint this event hit, with the query string removed
+	// (see NormalizeEndpoint). It is the grouping key for every rollup table,
+	// so it has to stay low-cardinality: grouping on the full URL made
+	// route_buckets a per-request copy of this table and filled the disk.
+	Route string `gorm:"index"`
+
+	// Path is the request path the client reported, query string and all.
+	//
+	// It is deliberately NOT indexed and NOT aggregated. Its cardinality is
+	// per-request, so it is the one field that would turn a rollup back into
+	// the event stream it summarises. It is kept because it is the source
+	// data Route is derived from: if the normalisation rule ever changes, the
+	// new rule can be replayed over history rather than only applying to new
+	// events.
+	Path string
+
+	Method string `gorm:"index"`
+	Status int    `gorm:"index;index:idx_events_user_status_created_at,priority:2"`
 
 	DurationMs int64
 	RemoteIP   string

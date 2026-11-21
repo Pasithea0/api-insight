@@ -76,6 +76,26 @@ type Config struct {
 	// a key may request fewer days, never more. 0 disables it.
 	RawRetentionDays int
 
+	// RollupRetentionDays bounds the age of the HOURLY pre-aggregated tables
+	// (route_buckets, metric_buckets). 0 (the default) keeps them forever.
+	//
+	// These are not raw events and were never covered by APP_RETENTION_DAYS,
+	// so nothing pruned them: one deployment reached 358M rows and 127 GB in
+	// route_buckets alone while the events table that retention actually
+	// governed was 70 GB. That matters more than it sounds, because the
+	// rollup tables are what every chart reads.
+	RollupRetentionDays int
+
+	// DailyRollupRetentionDays bounds the age of the DAILY pre-aggregated
+	// tables (daily_route_buckets, daily_metric_buckets). 0 (the default)
+	// keeps them forever.
+	//
+	// Separate from the hourly window on purpose: the dashboard switches to
+	// the daily tables for ranges beyond 48h, so they are the long-range
+	// record. A useful pairing is a short hourly window with daily history
+	// kept indefinitely.
+	DailyRollupRetentionDays int
+
 	// TimescaleContinuousAggregates materialises hourly rollups inside the
 	// database (percentile_cont is supported in caggs on TimescaleDB 2.30),
 	// so the aggregation worker reads pre-computed rows instead of scanning
@@ -244,6 +264,22 @@ func Load() *Config {
 	if v := os.Getenv("APP_RAW_RETENTION_DAYS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
 			cfg.RawRetentionDays = n
+		}
+	}
+
+	// The rollup windows read 0 as "keep forever" for the same reason
+	// APP_RETENTION_DAYS does: silently applying a default would prune
+	// history the operator believes is retained. Unlike the raw-event
+	// policy these apply whatever the event store is, because the
+	// pre-aggregated tables always live in Postgres.
+	if v := os.Getenv("APP_ROLLUP_RETENTION_DAYS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			cfg.RollupRetentionDays = n
+		}
+	}
+	if v := os.Getenv("APP_DAILY_ROLLUP_RETENTION_DAYS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			cfg.DailyRollupRetentionDays = n
 		}
 	}
 

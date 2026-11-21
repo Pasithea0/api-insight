@@ -213,7 +213,27 @@ func main() {
 		objectRetention = objectStore
 		eventScanner = objectStore
 	}
-	dbpkg.StartRetentionWorker(sqlDB, objectRetention, retentionLookup)
+	// The pre-aggregated tables are pruned by the same worker but under their
+	// own windows, and they are pruned whatever the event store is: they are
+	// always in Postgres, and nothing used to prune them at all.
+	rollupWindows := dbpkg.RollupWindows{
+		HourlyDays: cfg.RollupRetentionDays,
+		DailyDays:  cfg.DailyRollupRetentionDays,
+	}
+	dbpkg.StartRetentionWorker(sqlDB, objectRetention, retentionLookup, rollupWindows)
+
+	if cfg.RollupRetentionDays > 0 || cfg.DailyRollupRetentionDays > 0 {
+		zlog.Info().
+			Int("hourly_days", cfg.RollupRetentionDays).
+			Int("daily_days", cfg.DailyRollupRetentionDays).
+			Msg("retention: pruning pre-aggregated tables")
+	} else {
+		// Worth saying out loud, because these tables are what every chart
+		// reads and until now they were unbounded in practice rather than by
+		// choice — the normalised route keeps them small enough to keep.
+		zlog.Info().Msg("retention: pre-aggregated tables are kept forever " +
+			"(set APP_ROLLUP_RETENTION_DAYS / APP_DAILY_ROLLUP_RETENTION_DAYS to bound them)")
+	}
 
 	startupHours := eventStoreStartupHours
 	if objectStore != nil {

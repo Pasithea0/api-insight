@@ -178,6 +178,24 @@ reclaim the disk from the old `events` table (including the TimescaleDB
 hypertable trap), and the reverting path:
 [`docs/object-store.md`](docs/object-store.md).
 
+### Rollups are pruned separately
+
+`APP_RETENTION_DAYS` governs **raw events only**. The pre-aggregated tables are
+not events, and nothing pruned them until two knobs existed for it:
+`APP_ROLLUP_RETENTION_DAYS` (hourly) and `APP_DAILY_ROLLUP_RETENTION_DAYS`
+(daily), both defaulting to `0` = keep forever.
+
+That gap is not academic. One deployment reached **185 GB of rollups behind a
+70 GB events table** — clearing the events freed less than a third of the disk.
+The cause was `route` holding the full request URL rather than an endpoint, so
+every request was its own route: 160,890 rows in one hour that collapse to 21
+distinct paths. Routes are now normalised to endpoints, the request is kept
+verbatim in a separate `path` field, and the tables grow at ~1 MB/day instead
+of ~6 GB/day.
+
+Reasoning, measurements and the disk-reclaim procedures:
+[`docs/rollups.md`](docs/rollups.md).
+
 ---
 
 ## Development
