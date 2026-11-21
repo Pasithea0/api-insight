@@ -253,9 +253,12 @@ var retentionPassMu sync.Mutex
 // parseRetentionDays validates the retention field of the settings form.
 //
 // Empty or 0 means "use the configured default" — the same sentinel API keys
-// already store — and a value above maxDays is clamped to it, matching what key
-// creation does, so the console can never persist a window the service is not
-// allowed to honour. Anything negative or non-numeric is rejected instead of
+// already store. That default is itself UNLIMITED when APP_RETENTION_DAYS=0,
+// so 0 here means "keep everything" in that configuration, not a typo. A
+// value above maxDays is clamped to it, matching what key creation does, so
+// the console can never persist a window the service is not allowed to
+// honour; when maxDays is 0 there is no ceiling to clamp to and any positive
+// value is accepted. Anything negative or non-numeric is rejected instead of
 // guessed at: a typo must not silently become a retention policy.
 func parseRetentionDays(raw string, maxDays int) (int, error) {
 	raw = strings.TrimSpace(raw)

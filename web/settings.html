@@ -31,13 +31,13 @@
           id="retention-days"
           name="retention_days"
           type="number"
-          min="1"
-          max="{{.MaxRetentionDays}}"
+          min="0"
+          {{if .MaxRetentionDays}}max="{{.MaxRetentionDays}}"{{end}}
           value="{{.MaxRetentionDays}}"
           required
         />
         <div style="color: var(--muted-soft); font-size: 0.75rem; margin-top: 0.25rem;">
-          Max {{.MaxRetentionDays}} days (configured via environment).
+          {{if .MaxRetentionDays}}Max {{.MaxRetentionDays}} days (configured via environment).{{else}}Unlimited: 0 means keep these events forever (configured via environment).{{end}}
         </div>
       </div>
     </div>
@@ -78,7 +78,7 @@
               action="/admin/apikeys/set-retention"
               data-retention-form
               data-project="{{.Name}}"
-              data-effective-days="{{if gt .RetentionDays 0}}{{.RetentionDays}}{{else}}{{$.MaxRetentionDays}}{{end}}"
+              data-effective-days="{{if gt .RetentionDays 0}}{{.RetentionDays}}{{else}}{{if $.MaxRetentionDays}}{{$.MaxRetentionDays}}{{else}}999999{{end}}{{end}}"
               style="display: flex; gap: 0.3rem; align-items: center;"
             >
               <input type="hidden" name="id" value="{{.ID}}" />
@@ -86,16 +86,16 @@
                 name="retention_days"
                 type="number"
                 min="0"
-                max="{{$.MaxRetentionDays}}"
+                {{if $.MaxRetentionDays}}max="{{$.MaxRetentionDays}}"{{end}}
                 value="{{if gt .RetentionDays 0}}{{.RetentionDays}}{{else}}{{$.MaxRetentionDays}}{{end}}"
-                title="Days to keep this project's events. Lowering it deletes older events."
+                title="Days to keep this project's events. Lowering it hides and then deletes older events; 0 means keep everything."
                 style="width: 4.5rem; font-size: 0.75rem; padding: 0.15rem 0.3rem;"
                 required
               />
               <button type="submit" style="font-size: 0.5rem; padding: 0.1rem 0.2rem;">Save</button>
             </form>
             <div style="color: var(--muted-soft); font-size: 0.7rem; margin-top: 0.25rem;">
-              {{if gt .RetentionDays 0}}{{.RetentionDays}} days{{else}}Default ({{$.MaxRetentionDays}} days){{end}}
+              {{if gt .RetentionDays 0}}{{.RetentionDays}} days{{else}}{{if $.MaxRetentionDays}}Default ({{$.MaxRetentionDays}} days){{else}}Unlimited{{end}}{{end}}
             </div>
           </td>
           <td>
@@ -241,8 +241,15 @@
     for (var i = 0; i < forms.length; i++) {
       forms[i].addEventListener('submit', function (event) {
         var form = event.currentTarget;
-        var next = parseInt(form.querySelector('input[name="retention_days"]').value, 10);
+        var input = form.querySelector('input[name="retention_days"]');
+        var raw = input.value.trim();
+        var next = parseInt(raw, 10);
         var current = parseInt(form.getAttribute('data-effective-days'), 10);
+        // 0 (or blank) means unlimited, which is always a grow, never a
+        // shrinkage — so there is nothing destructive to confirm.
+        if (raw === '' || next === 0) {
+          return;
+        }
         if (!isFinite(next) || !isFinite(current) || next >= current) {
           return;
         }

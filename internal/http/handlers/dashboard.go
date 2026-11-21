@@ -107,7 +107,10 @@ func populateProjectsForLayout(data *LayoutData, db *gorm.DB, cfg *config.Config
 		data.ChartMaxDays = cfg.RetentionDays
 	}
 	if data.ChartMaxDays <= 0 {
-		data.ChartMaxDays = 30
+		// Unlimited retention (or a project with no window at all). The chart
+		// range selector still has to offer *something*, so it offers a year:
+		// the API accepts any range, this is only the dropdown's ceiling.
+		data.ChartMaxDays = 365
 	}
 }
 

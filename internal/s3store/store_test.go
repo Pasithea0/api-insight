@@ -633,6 +633,39 @@ func TestRetentionFiltersAtReadTime(t *testing.T) {
 	}
 }
 
+// TestRetentionUnlimitedKeepsEverything is the object-store half of
+// APP_RETENTION_DAYS=0: with no window to resolve, the reader must not drop a
+// single event, however old.
+func TestRetentionUnlimitedKeepsEverything(t *testing.T) {
+	store, _ := newTestStore(t, Options{
+		Retention: fixedRetention{days: 0, maxDays: 0},
+	})
+
+	now := time.Now().UTC()
+	seedStore(t, store, []dbpkg.Event{
+		eventAt(now.Add(-10*time.Minute), "p", 200, 1, "/fresh"),
+		eventAt(now.Add(-70*time.Hour), "p", 200, 1, "/old"),
+		eventAt(now.Add(-90*24*time.Hour), "p", 200, 1, "/ancient"),
+	})
+
+	got, err := store.QueryEvents(context.Background(), dbpkg.EventQuery{
+		// A cutoff far enough back that nothing is excluded by the query
+		// itself, so only the retention policy can drop rows.
+		Cutoff: now.Add(-365 * 24 * time.Hour),
+		Limit:  100,
+	})
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if len(got) != 3 {
+		routes := make([]string, 0, len(got))
+		for _, e := range got {
+			routes = append(routes, e.Route)
+		}
+		t.Fatalf("unlimited retention returned %d of 3 events: %v", len(got), routes)
+	}
+}
+
 // TestDeleteBeforeKeepsWholeHours is the safety property of the retention
 // pass: an hour bucket is dropped only when the whole bucket is outside the
 // window, so a partial hour never disappears.

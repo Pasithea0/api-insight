@@ -167,8 +167,16 @@ and CSV export keeps working unchanged. Raw-event responses report which store
 answered them, and any request can override the choice with
 `?store=s3|postgres|clickhouse`.
 
-Full details, including the cost trade-offs, the migration runbook and the
-reverting path: [`docs/object-store.md`](docs/object-store.md).
+With the events in a bucket, `APP_RETENTION_DAYS=0` — the natural setting when
+storage is cheap and the point is to stop losing history to a full disk —
+means **keep forever**: nothing expires, and the retention pass does nothing.
+The same value with the events in Postgres means the table grows without bound,
+and the service says so at startup.
+
+Full details, including the cost trade-offs, the migration runbook, how to
+reclaim the disk from the old `events` table (including the TimescaleDB
+hypertable trap), and the reverting path:
+[`docs/object-store.md`](docs/object-store.md).
 
 ---
 

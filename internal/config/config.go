@@ -24,6 +24,11 @@ type Config struct {
 	// RetentionDays is the maximum retention (in days) that any individual
 	// API key is allowed to request. Per-key settings will be clamped to
 	// this value.
+	//
+	// 0 means UNLIMITED: raw events are kept forever. That is only a sane
+	// setting when the events live in an object store, where storage is
+	// cheap and effectively unbounded — with the events in Postgres it is
+	// how the database host's disk filled up.
 	RetentionDays int
 
 	ListenAddr string
@@ -171,6 +176,10 @@ const (
 // S3Enabled reports whether raw events are stored in the object store.
 func (c *Config) S3Enabled() bool { return c.EventStore == EventStoreS3 }
 
+// RetentionUnlimited reports that raw events are kept indefinitely
+// (APP_RETENTION_DAYS=0).
+func (c *Config) RetentionUnlimited() bool { return c.RetentionDays <= 0 }
+
 // S3Configured reports whether every setting needed to open the object store
 // is present. APP_EVENT_STORE=s3 without credentials is a misconfiguration,
 // and the caller degrades to Postgres rather than starting broken.
@@ -204,7 +213,11 @@ func Load() *Config {
 	}
 
 	if v := os.Getenv("APP_RETENTION_DAYS"); v != "" {
-		if days, err := strconv.Atoi(v); err == nil && days > 0 {
+		// 0 is meaningful, not a typo: it means "keep raw events forever".
+		// Silently ignoring it and applying the 30-day default is the worst
+		// of both worlds — the operator believes they have disabled
+		// expiry while the service quietly deletes their history.
+		if days, err := strconv.Atoi(v); err == nil && days >= 0 {
 			cfg.RetentionDays = days
 		}
 	}

@@ -86,6 +86,15 @@ func StartRetentionWorker(db *gorm.DB, objects ObjectRetention, windows ProjectR
 				runObjectRetention(objects, windows)
 				return
 			}
+			if windows != nil && windows.MaxRetentionDays() <= 0 {
+				// Unlimited retention with the events in Postgres. There is
+				// nothing to delete, and running the pass would be a full
+				// scan that removes nothing. Rows ingested while retention
+				// was still limited keep whatever expiry they were stamped
+				// with, though, so this only stops *new* data from expiring.
+				log.Printf("retention: unlimited (APP_RETENTION_DAYS=0) — rows already stamped with an expiry still expire; only new events are kept forever")
+				return
+			}
 			if err := runRetentionOnce(db); err != nil {
 				log.Printf("retention cleanup error: %v", err)
 			}
@@ -100,6 +109,48 @@ func StartRetentionWorker(db *gorm.DB, objects ObjectRetention, windows ProjectR
 			run()
 		}
 	}()
+}
+
+// WarnOrphanedEventsTable logs a one-off hint when the Postgres events table
+// still holds rows but is no longer being written to.
+//
+// After a switch to an object store the table is dead weight: nothing writes
+// it, nothing prunes it (retention follows the configured store), and its
+// pages stay allocated on the host whose disk is the reason for the switch in
+// the first place. The estimate comes from the planner's statistics, so this
+// costs one catalog read rather than a count over millions of rows.
+//
+// It deliberately does NOT clean up. Dropping data is the operator's call,
+// and on a TimescaleDB hypertable the obvious statement is the wrong one:
+// `TRUNCATE ONLY events` fails outright, and `VACUUM FULL events` on the
+// parent table reclaims nothing from the chunks.
+func WarnOrphanedEventsTable(db *gorm.DB) {
+	if db == nil {
+		return
+	}
+	var estimate float64
+	if err := db.Raw(`SELECT COALESCE(reltuples, 0) FROM pg_class WHERE oid = 'events'::regclass`).
+		Scan(&estimate).Error; err != nil {
+		// The table may not exist at all, which is the ideal state.
+		return
+	}
+	if estimate < 1000 {
+		return
+	}
+
+	var isHyper bool
+	_ = db.Raw(`SELECT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'timescaledb')`).Scan(&isHyper).Error
+
+	log.Printf("event store: the Postgres events table still holds about %.0f rows but is no longer written to (APP_EVENT_STORE=s3). "+
+		"They are dead weight on this host's disk. Reclaiming them is a deliberate, destructive step:", estimate)
+	if isHyper {
+		log.Printf("  this looks like a TimescaleDB hypertable, so use the chunk-aware form:")
+		log.Printf("    SELECT show_chunks('events');                    -- inspect first")
+		log.Printf("    SELECT drop_chunks('events');                    -- drops every chunk; frees disk")
+		log.Printf("    -- or, equivalently and simpler: TRUNCATE events;  (NOT \"TRUNCATE ONLY events\", which fails)")
+	} else {
+		log.Printf("    TRUNCATE events;   -- releases the space to the OS immediately")
+	}
 }
 
 // ObjectRetention is the object store's half of retention: it can drop whole

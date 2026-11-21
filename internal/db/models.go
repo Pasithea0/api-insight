@@ -71,9 +71,9 @@ type RouteBucket struct {
 	Route       string    `gorm:"uniqueIndex:idx_route_bucket_unique,priority:3;not null"`
 	BucketStart time.Time `gorm:"uniqueIndex:idx_route_bucket_unique,priority:4;not null"`
 
-	TotalCount    int64            `gorm:"not null"`
-	ErrorCount    int64            `gorm:"not null"`
-	AvgDurationMs float64          `gorm:"not null"`
+	TotalCount    int64             `gorm:"not null"`
+	ErrorCount    int64             `gorm:"not null"`
+	AvgDurationMs float64           `gorm:"not null"`
 	StatusCounts  datatypes.JSONMap `gorm:"type:jsonb"`
 }
 
@@ -104,9 +104,9 @@ type DailyRouteBucket struct {
 	Route      string    `gorm:"uniqueIndex:idx_daily_route_unique,priority:3;not null"`
 	BucketDate time.Time `gorm:"uniqueIndex:idx_daily_route_unique,priority:4;not null"`
 
-	TotalCount    int64            `gorm:"not null"`
-	ErrorCount    int64            `gorm:"not null"`
-	AvgDurationMs float64          `gorm:"not null"`
+	TotalCount    int64             `gorm:"not null"`
+	ErrorCount    int64             `gorm:"not null"`
+	AvgDurationMs float64           `gorm:"not null"`
 	StatusCounts  datatypes.JSONMap `gorm:"type:jsonb"`
 }
 

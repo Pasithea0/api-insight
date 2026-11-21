@@ -169,9 +169,13 @@ back out of the bucket once.
 - **Timestamps are stored at millisecond resolution.** Postgres keeps
   microseconds. `created_at` is compared and displayed at second resolution
   everywhere in the dashboard.
-- **The Postgres `events` table still exists but stays empty.** It is not
-  dropped, so switching back is a configuration change rather than a
-  migration. Nothing reads it while `APP_EVENT_STORE=s3`.
+- **The Postgres `events` table still exists but stays empty, and nothing prunes
+  it.** It is not dropped, so switching back is a configuration change rather
+  than a migration. But retention follows the *configured* store, so the rows
+  written before the switch never expire on their own and their pages stay
+  allocated on the host whose disk is the point of this exercise. The service
+  logs a hint at startup when it sees them; reclaiming them is a deliberate
+  step (see [step 8](#8-then-and-only-then-reclaim-the-disk)).
 - **A busy hour is a large read.** An hour's objects are fetched 8 at a time
   and decoded. Retune `APP_S3_FLUSH_INTERVAL` (fewer, larger objects vs
   fresher data) if the balance is wrong for the traffic volume.
@@ -286,21 +290,99 @@ Recent rows come from `s3`; older rows fall through to `postgres`.
 ### 8. Then, and only then, reclaim the disk
 
 Once step 6 shows rollups rebuilding from the bucket and step 7 shows old rows
-still reachable, the `events` table is dead weight. It is empty of new writes,
-so `TRUNCATE` (not `DROP`) reclaims the space while leaving the schema and the
-rollback path intact:
+still reachable, the Postgres `events` table is dead weight: nothing writes it,
+and retention no longer prunes it (retention follows the configured store), so
+it sits on the host whose disk is the whole reason for this migration. The
+service says so at startup rather than leaving you to infer it:
 
-```sql
-TRUNCATE events;
-VACUUM FULL events;
+```
+event store: the Postgres events table still holds about 13200000 rows but is no
+longer written to (APP_EVENT_STORE=s3). They are dead weight on this host's disk.
 ```
 
-`VACUUM FULL` takes an exclusive lock; run it in a window.
+**Look before you leap.** On a TimescaleDB hypertable — which this table becomes
+whenever the extension is available — the obvious statement is the wrong one:
+
+| Statement | On a hypertable |
+|---|---|
+| `TRUNCATE ONLY events;` | **fails**: `cannot truncate only a hypertable` |
+| `TRUNCATE events;` | works; truncates every chunk and frees the disk |
+| `VACUUM FULL events;` | runs, but the parent table is an empty shell — it reclaims **nothing** from the chunks |
+| `DROP TABLE events;` | works; deletes every chunk, and the schema with it |
+
+So, in a window, and only after backing up:
+
+```sql
+-- 1. Are these rows still wanted? This is the same cutover used in step 7;
+--    if it returns rows, stop and find out why.
+SELECT count(*) FROM events;
+
+-- 2. Is it a hypertable? This decides which statement in step 3 is safe.
+SELECT hypertable_name FROM timescaledb_information.hypertables
+WHERE hypertable_name = 'events';
+
+-- 3. What is it actually costing? Compare these before and after.
+SELECT pg_size_pretty(pg_total_relation_size('events')) AS total,
+       pg_size_pretty(pg_relation_size('events'))      AS heap,
+       pg_size_pretty(pg_indexes_size('events'))       AS indexes;
+
+-- 4. Reclaim. On a hypertable either form is fine; TRUNCATE is simpler and
+--    keeps the schema (and therefore the rollback path) intact.
+TRUNCATE events;
+-- or, chunk by chunk, if you want the drops to be visible and interruptible:
+--   SELECT show_chunks('events');
+--   SELECT drop_chunks('events');
+
+-- 5. Confirm.
+SELECT pg_size_pretty(pg_total_relation_size('events'));
+```
+
+Two things worth knowing about the numbers:
+
+- `TRUNCATE` releases the space to the operating system immediately. Unlike a
+  `DELETE`, it does not leave the file allocated and does not need a `VACUUM`
+  afterwards. If the disk is still full after a `TRUNCATE` that reported
+  success, the space is being held by something else — check
+  `pg_size_pretty(pg_database_size(current_database()))` and the rollup tables,
+  not this one.
+- If the database size does not fall as much as expected even after the table
+  is empty, look for leftover `_timescaledb_internal` chunk tables
+  (`SELECT * FROM show_chunks('events')`) and for WAL
+  (`SELECT pg_size_pretty(sum(size)) FROM pg_ls_waldir()`), which retains the
+  writes that filled it.
 
 **Do not delete the Postgres deployment.** Users, API keys and every chart
 live there, and the service will not start without it. What this migration
 buys is that the raw stream no longer lands on that disk — not that Postgres
 goes away.
+
+## Keeping history forever
+
+`APP_RETENTION_DAYS=0` means **unlimited**: raw events are kept forever. In
+object-store mode that is exactly what it says, because object storage is
+cheap and effectively unbounded:
+
+- the reader stops filtering on age, so every event ever written stays
+  readable;
+- the retention pass stops dropping hour buckets entirely (it logs that it is
+  doing nothing rather than listing the bucket for no reason);
+- a project can still ask for a shorter window of its own, and that is still
+  honoured at read time.
+
+With the events in **Postgres**, `0` means the same thing but the consequences
+are the ones this document exists because of: the `events` table grows without
+bound on the database host. The service warns loudly at startup when it sees
+that combination, and it is worth taking seriously.
+
+One asymmetry to know about: switching to unlimited does not resurrect
+anything already expired, and in Postgres mode rows keep whatever `expires_at`
+they were stamped with when they arrived — the daily worker says so and skips
+its pass. Only events ingested *after* the change are guaranteed to survive
+indefinitely.
+
+The chart range selector still tops out at a year when retention is unlimited.
+That is a dropdown, not a limit: the API accepts any `days=` or `hours=` value.
+
 
 ## Reverting
 

@@ -221,6 +221,30 @@ func main() {
 	}
 	dbpkg.StartAggregationWorker(sqlDB, eventScanner, startupHours)
 
+	// Retention. 0 means "keep raw events forever", which is only sensible
+	// when the events live in an object store: with them in Postgres it is
+	// exactly the setting that filled this host's disk before.
+	if cfg.RetentionUnlimited() {
+		if objectStore != nil {
+			zlog.Warn().Msg("retention: UNLIMITED (APP_RETENTION_DAYS=0) — raw events are kept forever; " +
+				"nothing is deleted from the object store")
+		} else {
+			zlog.Warn().Msg("retention: UNLIMITED (APP_RETENTION_DAYS=0) while raw events are stored in Postgres — " +
+				"the events table will grow without bound on the database host")
+		}
+	} else {
+		zlog.Info().Int("retention_days", cfg.RetentionDays).
+			Bool("event_store_is_s3", objectStore != nil).
+			Msg("retention configured")
+	}
+
+	// After a switch to the object store the Postgres events table is dead
+	// weight. Say so rather than leaving the operator to infer it from a full
+	// disk.
+	if objectStore != nil {
+		dbpkg.WarnOrphanedEventsTable(sqlDB)
+	}
+
 	if err := dbpkg.EnsureBootstrapAdmin(sqlDB, cfg); err != nil {
 		zlog.Fatal().Err(err).Msg("failed to ensure bootstrap admin")
 	}
