@@ -284,7 +284,7 @@ func parseRetentionDays(raw string, maxDays int) (int, error) {
 // window itself is saved synchronously — so what the next ingest stamps is
 // correct immediately — and the backlog is cleaned up in the background, with
 // the outcome logged.
-func SetAPIKeyRetention(db *gorm.DB, cfg *config.Config, mirror RetentionMirror) fiber.Handler {
+func SetAPIKeyRetention(db *gorm.DB, cfg *config.Config, mirror RetentionMirror, eventStoreIsSQL bool) fiber.Handler {
 	return func(ctx *fiber.Ctx) error {
 		id := formOrQuery(ctx, "id")
 		if id == "" {
@@ -321,7 +321,7 @@ func SetAPIKeyRetention(db *gorm.DB, cfg *config.Config, mirror RetentionMirror)
 			window = days
 		}
 
-		applyProjectRetentionAsync(db, mirror, strconv.Itoa(int(apiKey.UserID)), apiKey.Name, window)
+		applyProjectRetentionAsync(db, mirror, eventStoreIsSQL, strconv.Itoa(int(apiKey.UserID)), apiKey.Name, window)
 
 		return ctx.Redirect("/settings", fiber.StatusSeeOther)
 	}
@@ -333,7 +333,14 @@ func SetAPIKeyRetention(db *gorm.DB, cfg *config.Config, mirror RetentionMirror)
 // Failures are logged, never surfaced: the setting is already saved and the
 // daily retention worker keeps enforcing expiries, so a failed pass degrades to
 // "the backlog goes on the next worker run" rather than losing the edit.
-func applyProjectRetentionAsync(db *gorm.DB, mirror RetentionMirror, userID, project string, retentionDays int) {
+//
+// eventStoreIsSQL selects whether there is a backlog to reconcile at all.
+// When the raw stream lives in an object store there is nothing to delete or
+// re-expire: the store's reader resolves each project's current window and
+// drops older events as it reads them, so the new value is already in force
+// by the time this runs. The pass is skipped rather than run against an
+// empty table.
+func applyProjectRetentionAsync(db *gorm.DB, mirror RetentionMirror, eventStoreIsSQL bool, userID, project string, retentionDays int) {
 	go func() {
 		// A panic in a background goroutine takes the whole process with it,
 		// and this one runs after the operator's edit has already been saved.
@@ -348,14 +355,19 @@ func applyProjectRetentionAsync(db *gorm.DB, mirror RetentionMirror, userID, pro
 		defer retentionPassMu.Unlock()
 
 		start := time.Now()
-		res, err := dbpkg.ApplyProjectRetention(db, userID, project, retentionDays)
-		if err != nil {
-			log.Printf("retention: cleanup of %s/%s failed (setting saved; the worker will retry): %v",
-				userID, project, err)
-			return
+		if !eventStoreIsSQL {
+			log.Printf("retention: %s/%s now %d days — the object store applies this window at read time, so there is no backlog to reconcile",
+				userID, project, retentionDays)
+		} else {
+			res, err := dbpkg.ApplyProjectRetention(db, userID, project, retentionDays)
+			if err != nil {
+				log.Printf("retention: cleanup of %s/%s failed (setting saved; the worker will retry): %v",
+					userID, project, err)
+				return
+			}
+			log.Printf("retention: %s/%s now %d days — deleted %d expired events, rewrote %d expiries in %s",
+				userID, project, retentionDays, res.Deleted, res.Rewritten, time.Since(start).Round(time.Millisecond))
 		}
-		log.Printf("retention: %s/%s now %d days — deleted %d expired events, rewrote %d expiries in %s",
-			userID, project, retentionDays, res.Deleted, res.Rewritten, time.Since(start).Round(time.Millisecond))
 
 		if mirror == nil {
 			return

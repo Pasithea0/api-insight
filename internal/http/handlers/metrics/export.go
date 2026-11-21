@@ -1,6 +1,7 @@
 package metrics
 
 import (
+	"context"
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
@@ -109,7 +110,7 @@ func Export(db *gorm.DB, raw *dbpkg.RawEvents) fiber.Handler {
 			if !hasAttrFilter {
 				topRows, topErr = exportTopRoutesFromBuckets(db, userID, project, status, cutoff, limit, offset)
 			} else {
-				topRows, topErr = exportTopRoutesFromEvents(db, userID, project, status, attrKey, attrValue, cutoff, limit, offset)
+				topRows, topErr = exportTopRoutesFromEvents(ctx.Context(), db, raw, userID, project, status, attrKey, attrValue, cutoff, limit, offset)
 			}
 			if topErr != nil {
 				log.Printf("failed to query top routes for export: %v", topErr)
@@ -126,29 +127,44 @@ func Export(db *gorm.DB, raw *dbpkg.RawEvents) fiber.Handler {
 			if attrKey == "" {
 				return nil // silent fail
 			}
-
-			var rows []attributeValueCount
-			// This is simplified and won't handle the "virtual" attributes like remote_ip
 			if !safeAttrKey.MatchString(attrKey) {
 				return nil
 			}
 
-			dataSQL := "SELECT events.attributes::jsonb ->> ? AS value, COUNT(*) AS count FROM events WHERE events.created_at >= ?"
-			args := []any{attrKey, cutoff}
-			if userID != "" {
-				dataSQL += " AND events.user_id = ?"
-				args = append(args, userID)
-			}
-			if project != "" {
-				dataSQL += " AND events.project = ?"
-				args = append(args, project)
-			}
-			dataSQL += " AND jsonb_exists(events.attributes::jsonb, ?) GROUP BY 1 ORDER BY count DESC LIMIT ? OFFSET ?"
-			args = append(args, attrKey, limit, offset)
+			var rows []attributeValueCount
 
-			if err := db.Raw(dataSQL, args...).Scan(&rows).Error; err != nil {
-				log.Printf("failed to query attribute value counts for export: %v", err)
-				return nil
+			if scanner, _ := raw.DefaultScanner(); scanner != nil {
+				// Object-store mode: group by the attribute value in Go,
+				// over the same range and scope the SQL path uses.
+				found, _, err := scanValueCounts(ctx.Context(), scanner, cutoff,
+					dbpkg.ScanFilter{UserID: userID, Project: project, AttrExists: attrKey},
+					attributeKeyExpr(attrKey), limit, offset)
+				if err != nil {
+					log.Printf("failed to query attribute value counts for export: %v", err)
+					return nil
+				}
+				for _, r := range found {
+					rows = append(rows, attributeValueCount{Value: r.Value, Count: r.Count})
+				}
+			} else {
+				// This is simplified and won't handle the "virtual" attributes like remote_ip
+				dataSQL := "SELECT events.attributes::jsonb ->> ? AS value, COUNT(*) AS count FROM events WHERE events.created_at >= ?"
+				args := []any{attrKey, cutoff}
+				if userID != "" {
+					dataSQL += " AND events.user_id = ?"
+					args = append(args, userID)
+				}
+				if project != "" {
+					dataSQL += " AND events.project = ?"
+					args = append(args, project)
+				}
+				dataSQL += " AND jsonb_exists(events.attributes::jsonb, ?) GROUP BY 1 ORDER BY count DESC LIMIT ? OFFSET ?"
+				args = append(args, attrKey, limit, offset)
+
+				if err := db.Raw(dataSQL, args...).Scan(&rows).Error; err != nil {
+					log.Printf("failed to query attribute value counts for export: %v", err)
+					return nil
+				}
 			}
 
 			writer.Write([]string{"value", "count"})
@@ -188,7 +204,7 @@ func exportTopRoutesFromBuckets(db *gorm.DB, userID, project, status string, cut
 		countField = "SUM(error_count) as count"
 	}
 	q = db.Model(&dbpkg.RouteBucket{}).
-		Select("route, " + countField).
+		Select("route, "+countField).
 		Where("bucket_start >= ?", bucketCutoff)
 	if userID != "" {
 		q = q.Where("user_id = ?", userID)
@@ -207,7 +223,29 @@ func exportTopRoutesFromBuckets(db *gorm.DB, userID, project, status string, cut
 	return result, nil
 }
 
-func exportTopRoutesFromEvents(db *gorm.DB, userID, project, status, attrKey, attrValue string, cutoff time.Time, limit, offset int) ([]topRoute, error) {
+func exportTopRoutesFromEvents(ctx context.Context, db *gorm.DB, raw *dbpkg.RawEvents, userID, project, status, attrKey, attrValue string, cutoff time.Time, limit, offset int) ([]topRoute, error) {
+	filter := dbpkg.ScanFilter{
+		UserID:  userID,
+		Project: project,
+		Status:  status,
+	}
+	if attrKey != "" && attrValue != "" && safeAttrKey.MatchString(attrKey) {
+		filter.AttrKey = attrKey
+		filter.AttrValue = attrValue
+	}
+
+	if scanner, _ := raw.DefaultScanner(); scanner != nil {
+		// The export must list the same routes the console showed, so it
+		// shares the grouping and the ordering with the panel rather than
+		// reimplementing them.
+		groups, err := scanRouteGroups(ctx, scanner, cutoff, filter)
+		if err != nil {
+			return nil, err
+		}
+		rows, _ := routeGroupsToTopRoutes(groups, status, limit, offset)
+		return rows, nil
+	}
+
 	q := db.Model(&dbpkg.Event{}).
 		Where("created_at >= ?", cutoff)
 	if userID != "" {

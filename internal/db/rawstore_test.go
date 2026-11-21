@@ -40,6 +40,17 @@ func (f *fakeReader) EventByID(_ context.Context, id string) (*Event, error) {
 	return f.byID, nil
 }
 
+// newTestResolver wires the two SQL-era stores the way main.go used to: a
+// nil mirror is simply absent from the map, which is what makes an override
+// asking for it fall back to Postgres.
+func newTestResolver(pg, ch EventReader, def string) *RawEvents {
+	readers := map[string]EventReader{StorePostgres: pg}
+	if ch != nil {
+		readers[StoreClickHouse] = ch
+	}
+	return NewRawEvents(def, readers, nil)
+}
+
 func TestRawEventsResolve(t *testing.T) {
 	pg := &fakeReader{name: "postgres"}
 	ch := &fakeReader{name: "clickhouse"}
@@ -68,7 +79,7 @@ func TestRawEventsResolve(t *testing.T) {
 			if tc.nilClickHse {
 				chReader = nil
 			}
-			r := NewRawEvents(pg, chReader, tc.defaultSrc)
+			r := newTestResolver(pg, chReader, tc.defaultSrc)
 			if got := r.Resolve(tc.override).SourceName(); got != tc.wantSource {
 				t.Errorf("Resolve(%q) = %q, want %q", tc.override, got, tc.wantSource)
 			}
@@ -87,7 +98,7 @@ func TestRawEventsFallsBackOnError(t *testing.T) {
 	pg := &fakeReader{name: "postgres", events: []Event{{ID: 1}}}
 	chDown := &fakeReader{name: "clickhouse", err: errors.New("connection refused")}
 
-	r := NewRawEvents(pg, chDown, "clickhouse")
+	r := newTestResolver(pg, chDown, "clickhouse")
 	events, source, err := r.QueryEvents(context.Background(), "", EventQuery{})
 	if err != nil {
 		t.Fatalf("expected fallback to succeed, got %v", err)
@@ -110,7 +121,7 @@ func TestRawEventsEmptyResultIsNotAFailure(t *testing.T) {
 	pg := &fakeReader{name: "postgres", events: []Event{{ID: 99}}}
 	chEmpty := &fakeReader{name: "clickhouse", events: []Event{}}
 
-	r := NewRawEvents(pg, chEmpty, "clickhouse")
+	r := newTestResolver(pg, chEmpty, "clickhouse")
 	events, source, err := r.QueryEvents(context.Background(), "", EventQuery{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -134,7 +145,7 @@ func TestRawEventsEventByIDFallsThrough(t *testing.T) {
 	t.Run("found in mirror", func(t *testing.T) {
 		pg := &fakeReader{name: "postgres", byIDNil: true}
 		ch := &fakeReader{name: "clickhouse", byID: &Event{ID: 5}}
-		r := NewRawEvents(pg, ch, "clickhouse")
+		r := newTestResolver(pg, ch, "clickhouse")
 
 		ev, err := r.EventByID(context.Background(), "", "5")
 		if err != nil || ev == nil || ev.ID != 5 {
@@ -148,7 +159,7 @@ func TestRawEventsEventByIDFallsThrough(t *testing.T) {
 	t.Run("miss in mirror falls through to postgres", func(t *testing.T) {
 		pg := &fakeReader{name: "postgres", byID: &Event{ID: 5, Project: "p"}}
 		chMiss := &fakeReader{name: "clickhouse", byIDNil: true}
-		r := NewRawEvents(pg, chMiss, "clickhouse")
+		r := newTestResolver(pg, chMiss, "clickhouse")
 
 		ev, err := r.EventByID(context.Background(), "", "5")
 		if err != nil {
@@ -165,7 +176,7 @@ func TestRawEventsEventByIDFallsThrough(t *testing.T) {
 	t.Run("absent from both reports not found", func(t *testing.T) {
 		pg := &fakeReader{name: "postgres", byIDNil: true}
 		chMiss := &fakeReader{name: "clickhouse", byIDNil: true}
-		r := NewRawEvents(pg, chMiss, "clickhouse")
+		r := newTestResolver(pg, chMiss, "clickhouse")
 
 		ev, err := r.EventByID(context.Background(), "", "404")
 		if err != nil {
@@ -179,7 +190,7 @@ func TestRawEventsEventByIDFallsThrough(t *testing.T) {
 	t.Run("mirror error falls back to postgres", func(t *testing.T) {
 		pg := &fakeReader{name: "postgres", byID: &Event{ID: 7}}
 		chDown := &fakeReader{name: "clickhouse", idErr: errors.New("timeout")}
-		r := NewRawEvents(pg, chDown, "clickhouse")
+		r := newTestResolver(pg, chDown, "clickhouse")
 
 		ev, err := r.EventByID(context.Background(), "", "7")
 		if err != nil {

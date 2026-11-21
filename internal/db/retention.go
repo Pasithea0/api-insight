@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log"
@@ -71,21 +72,69 @@ func runRetentionOnce(db *gorm.DB) error {
 // than duplicating it: the policy enforces a global age ceiling by dropping
 // whole chunks, while this worker honours the shorter, per-API-key expiry
 // windows that individual keys are allowed to request.
-func StartRetentionWorker(db *gorm.DB) {
+//
+// objects selects the driver. When the events live in an object store there
+// are no rows to delete and the SQL pass is skipped entirely — instead the
+// hour buckets that no project could still want are dropped, where "no
+// project" means the longest window any key asks for. Shorter per-project
+// windows do not need this pass at all: the reader applies them as it reads,
+// which is the only way to honour a window on data that cannot be rewritten.
+func StartRetentionWorker(db *gorm.DB, objects ObjectRetention, windows ProjectRetentionLookup) {
 	go func() {
-		if err := runRetentionOnce(db); err != nil {
-			log.Printf("retention cleanup error (startup): %v", err)
+		run := func() {
+			if objects != nil {
+				runObjectRetention(objects, windows)
+				return
+			}
+			if err := runRetentionOnce(db); err != nil {
+				log.Printf("retention cleanup error: %v", err)
+			}
 		}
+
+		run()
 
 		ticker := time.NewTicker(24 * time.Hour)
 		defer ticker.Stop()
 
 		for range ticker.C {
-			if err := runRetentionOnce(db); err != nil {
-				log.Printf("retention cleanup error: %v", err)
-			}
+			run()
 		}
 	}()
+}
+
+// ObjectRetention is the object store's half of retention: it can drop whole
+// hour buckets, nothing finer.
+type ObjectRetention interface {
+	// DeleteBefore removes objects whose entire hour bucket is older than
+	// cutoff and reports how many were removed.
+	DeleteBefore(ctx context.Context, cutoff time.Time) (int, error)
+}
+
+// runObjectRetention drops the hour buckets no project could still want.
+func runObjectRetention(objects ObjectRetention, windows ProjectRetentionLookup) {
+	days := 0
+	if windows != nil {
+		days = windows.MaxRetentionDays()
+	}
+	if days <= 0 {
+		log.Printf("retention: no retention window is configured for the object store; skipping object deletion")
+		return
+	}
+
+	cutoff := time.Now().UTC().Add(-time.Duration(days) * 24 * time.Hour)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	defer cancel()
+
+	removed, err := objects.DeleteBefore(ctx, cutoff)
+	if err != nil {
+		log.Printf("retention: object store cleanup before %s failed after removing %d object(s): %v",
+			cutoff.Format(time.RFC3339), removed, err)
+		return
+	}
+	if removed > 0 {
+		log.Printf("retention: deleted %d object(s) older than %s from the object store (longest window: %d days)",
+			removed, cutoff.Format(time.RFC3339), days)
+	}
 }
 
 // ProjectRetentionResult reports what one retention edit actually changed.

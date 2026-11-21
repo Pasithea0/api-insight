@@ -6,6 +6,7 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"gorm.io/gorm"
 
+	"apiinsight/internal/cache"
 	dbpkg "apiinsight/internal/db"
 	"apiinsight/internal/http/handlers"
 )
@@ -50,7 +51,7 @@ func LatencyPercentilesSeries(db *gorm.DB) fiber.Handler {
 
 // AvgDuration returns the average request duration (in milliseconds) over the selected range.
 // The range is controlled by the same hours/days parameters as other metrics endpoints.
-func AvgDuration(db *gorm.DB) fiber.Handler {
+func AvgDuration(db *gorm.DB, phCache *cache.PartialHourCache, raw *dbpkg.RawEvents) fiber.Handler {
 	return func(ctx *fiber.Ctx) error {
 		user, ok := handlers.MustUser(ctx)
 		if !ok {
@@ -67,7 +68,7 @@ func AvgDuration(db *gorm.DB) fiber.Handler {
 
 		// Fast path: use pre-aggregated RouteBucket data (no attribute filters)
 		if !hasAttrFilter {
-			avgDuration, err := avgDurationFromBuckets(db, userID, project, status, cutoff)
+			avgDuration, err := avgDurationFromBuckets(db, phCache, raw, userID, project, status, cutoff)
 			if err != nil {
 				return errResponse(ctx, fiber.StatusInternalServerError, "failed to query avg duration")
 			}
@@ -75,11 +76,18 @@ func AvgDuration(db *gorm.DB) fiber.Handler {
 		}
 
 		// Fallback: compute from raw events
-		return avgDurationFromEvents(ctx, db, userID, project, status, attrKey, attrValue, cutoff)
+		return avgDurationFromEvents(ctx, db, raw, userID, project, status, attrKey, attrValue, cutoff)
 	}
 }
 
-func avgDurationFromBuckets(db *gorm.DB, userID, project, status string, cutoff time.Time) (float64, error) {
+// avgDurationFromBuckets computes the mean over the completed hours from the
+// route rollups, and folds in the current partial hour.
+//
+// The partial hour cannot come from a rollup — the rollup for an incomplete
+// hour does not exist yet — so it comes from the in-memory view of the
+// current hour when the events live in an object store, and from the events
+// table otherwise.
+func avgDurationFromBuckets(db *gorm.DB, phCache *cache.PartialHourCache, raw *dbpkg.RawEvents, userID, project, status string, cutoff time.Time) (float64, error) {
 	bucketCutoff := cutoff.UTC().Truncate(time.Hour)
 
 	// Use SQL to compute weighted average from route_buckets
@@ -110,60 +118,112 @@ func avgDurationFromBuckets(db *gorm.DB, userID, project, status string, cutoff 
 		bucketAvg = 0
 	}
 
-	// Partial hour from events (at most 1 hour of data)
+	// Partial hour (at most 1 hour of data)
 	currentHourStart := time.Now().UTC().Truncate(time.Hour)
 	partialStart := currentHourStart
 	if partialStart.Before(cutoff) {
 		partialStart = cutoff
 	}
-	if partialStart.Before(time.Now().UTC()) {
-		pq := db.Model(&dbpkg.Event{}).
-			Where("created_at >= ?", partialStart)
-		pq = scopeQueryUserID(pq, userID)
-		if project != "" {
-			pq = pq.Where("project = ?", project)
-		}
-		if status == "success" {
-			pq = pq.Where("status < 400")
-		} else if status == "error" {
-			pq = pq.Where("status >= 400")
-		}
+	if !partialStart.Before(time.Now().UTC()) {
+		return bucketAvg, nil
+	}
 
-		var partialAvg float64
-		if err := pq.Select("COALESCE(AVG(duration_ms), 0)").Scan(&partialAvg).Error; err != nil {
-			return 0, err
-		}
-		var partialCount int64
-		if err := pq.Select("COUNT(*)").Scan(&partialCount).Error; err != nil {
-			return 0, err
-		}
+	// Bucket total, needed to weight the partial hour against the rollups.
+	bucketTotalCount, err := bucketEventCount(db, bucketCutoff, userID, project)
+	if err != nil {
+		return 0, err
+	}
+
+	if scanner, _ := raw.DefaultScanner(); scanner != nil {
+		// No events table: take the partial hour from the live view that the
+		// ingest path maintains. Status is deliberately not applied here —
+		// the live view is not split by status, and inventing a filtered
+		// number from an unfiltered one would be worse than the small
+		// approximation of leaving the partial hour unfiltered, exactly as
+		// the SQL branch below does when the filter matches nothing.
+		partialAvg, partialCount := partialHourAverageDuration(phCache.Get(), userID, project)
 		if partialCount > 0 {
-			// Get bucket total count for weighted average
-			var bucketTotalCount int64
-			countQ := `SELECT COALESCE(SUM(total_count), 0) FROM route_buckets WHERE bucket_start >= ?`
-			countArgs := []any{bucketCutoff}
-			if userID != "" {
-				countQ += ` AND user_id = ?`
-				countArgs = append(countArgs, userID)
+			total := bucketTotalCount + partialCount
+			if total > 0 {
+				bucketAvg = (bucketAvg*float64(bucketTotalCount) + partialAvg*float64(partialCount)) / float64(total)
 			}
-			if project != "" {
-				countQ += ` AND project = ?`
-				countArgs = append(countArgs, project)
-			}
-			if err := db.Raw(countQ, countArgs...).Scan(&bucketTotalCount).Error; err != nil {
-				return 0, err
-			}
-			totalCount := bucketTotalCount + partialCount
-			if totalCount > 0 {
-				bucketAvg = (bucketAvg*float64(bucketTotalCount) + partialAvg*float64(partialCount)) / float64(totalCount)
-			}
+		}
+		return bucketAvg, nil
+	}
+
+	pq := db.Model(&dbpkg.Event{}).
+		Where("created_at >= ?", partialStart)
+	pq = scopeQueryUserID(pq, userID)
+	if project != "" {
+		pq = pq.Where("project = ?", project)
+	}
+	if status == "success" {
+		pq = pq.Where("status < 400")
+	} else if status == "error" {
+		pq = pq.Where("status >= 400")
+	}
+
+	var partialAvg float64
+	if err := pq.Select("COALESCE(AVG(duration_ms), 0)").Scan(&partialAvg).Error; err != nil {
+		return 0, err
+	}
+	var partialCount int64
+	if err := pq.Select("COUNT(*)").Scan(&partialCount).Error; err != nil {
+		return 0, err
+	}
+	if partialCount > 0 {
+		totalCount := bucketTotalCount + partialCount
+		if totalCount > 0 {
+			bucketAvg = (bucketAvg*float64(bucketTotalCount) + partialAvg*float64(partialCount)) / float64(totalCount)
 		}
 	}
 
 	return bucketAvg, nil
 }
 
-func avgDurationFromEvents(ctx *fiber.Ctx, db *gorm.DB, userID, project, status, attrKey, attrValue string, cutoff time.Time) error {
+// bucketEventCount is how many rolled-up events the range holds. It is the
+// weight the partial hour is blended against.
+func bucketEventCount(db *gorm.DB, bucketCutoff time.Time, userID, project string) (int64, error) {
+	countQ := `SELECT COALESCE(SUM(total_count), 0) FROM route_buckets WHERE bucket_start >= ?`
+	countArgs := []any{bucketCutoff}
+	if userID != "" {
+		countQ += ` AND user_id = ?`
+		countArgs = append(countArgs, userID)
+	}
+	if project != "" {
+		countQ += ` AND project = ?`
+		countArgs = append(countArgs, project)
+	}
+	var total int64
+	if err := db.Raw(countQ, countArgs...).Scan(&total).Error; err != nil {
+		return 0, err
+	}
+	return total, nil
+}
+
+func avgDurationFromEvents(ctx *fiber.Ctx, db *gorm.DB, raw *dbpkg.RawEvents, userID, project, status, attrKey, attrValue string, cutoff time.Time) error {
+	filter := dbpkg.ScanFilter{
+		UserID:    userID,
+		Project:   project,
+		Status:    status,
+		AttrKey:   attrKey,
+		AttrValue: attrValue,
+	}
+	if !safeAttrKey.MatchString(attrKey) {
+		// The SQL path silently ignores an unsafe attribute key; do the same
+		// rather than failing a request the old code answered.
+		filter.AttrKey = ""
+		filter.AttrValue = ""
+	}
+
+	if scanner, _ := raw.DefaultScanner(); scanner != nil {
+		avg, err := scanAverageDuration(ctx.Context(), scanner, cutoff, filter)
+		if err != nil {
+			return errResponse(ctx, fiber.StatusInternalServerError, "failed to query avg duration")
+		}
+		return jsonResponse(ctx, map[string]any{"avg_duration_ms": avg})
+	}
+
 	q := db.Model(&dbpkg.Event{}).
 		Where("created_at >= ?", cutoff)
 	q = scopeQueryUserID(q, userID)

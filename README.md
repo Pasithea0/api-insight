@@ -140,6 +140,38 @@ to keep.
 
 ---
 
+## Where events are stored
+
+By default raw events live in PostgreSQL, in the `events` table. That table is
+the one part of the system that grows without bound — millions of rows a day —
+so it can be moved to an S3-compatible object store instead (Backblaze B2,
+MinIO, AWS S3):
+
+```
+APP_EVENT_STORE=s3
+APP_S3_ENDPOINT=https://s3.us-east-005.backblazeb2.com
+APP_S3_REGION=us-east-005
+APP_S3_BUCKET=your-bucket
+APP_S3_ACCESS_KEY_ID=...
+APP_S3_SECRET_ACCESS_KEY=...
+```
+
+PostgreSQL is still required and is still the system of record: users, API keys
+and the pre-aggregated rollup tables that every chart reads stay there. Only
+the raw stream moves, and in `s3` mode the `events` table is not written at
+all — which is what frees the disk.
+
+The rollup worker rebuilds the hourly buckets by streaming each hour back out
+of the bucket and aggregating in Go, so every dashboard panel, top-routes list
+and CSV export keeps working unchanged. Raw-event responses report which store
+answered them, and any request can override the choice with
+`?store=s3|postgres|clickhouse`.
+
+Full details, including the cost trade-offs, the migration runbook and the
+reverting path: [`docs/object-store.md`](docs/object-store.md).
+
+---
+
 ## Development
 
 ### Prerequisites

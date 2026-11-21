@@ -16,7 +16,7 @@ type trafficPoint struct {
 	Count  int64  `json:"count"`
 }
 
-func TrafficSeries(db *gorm.DB, phCache *cache.PartialHourCache) fiber.Handler {
+func TrafficSeries(db *gorm.DB, phCache *cache.PartialHourCache, raw *dbpkg.RawEvents) fiber.Handler {
 	return func(ctx *fiber.Ctx) error {
 		user, ok := handlers.MustUser(ctx)
 		if !ok {
@@ -28,6 +28,8 @@ func TrafficSeries(db *gorm.DB, phCache *cache.PartialHourCache) fiber.Handler {
 		status := ctx.Query("status")
 		attrKey := ctx.Query("attr_key")
 		attrValue := ctx.Query("attr_value")
+
+		scanner, _ := raw.DefaultScanner()
 
 		// If we can use pre-aggregated buckets (no attribute filters and hourly buckets)
 		if attrKey == "" && !bucket30Min {
@@ -41,13 +43,13 @@ func TrafficSeries(db *gorm.DB, phCache *cache.PartialHourCache) fiber.Handler {
 			}
 
 			var selectExpr string
-				if status == "success" {
-					selectExpr = "to_char(bucket_start, 'YYYY-MM-DD\"T\"HH24:MI:SS') || 'Z' as bucket, sum(total_count - error_count) as count"
-				} else if status == "error" {
-					selectExpr = "to_char(bucket_start, 'YYYY-MM-DD\"T\"HH24:MI:SS') || 'Z' as bucket, sum(error_count) as count"
-				} else {
-					selectExpr = "to_char(bucket_start, 'YYYY-MM-DD\"T\"HH24:MI:SS') || 'Z' as bucket, sum(total_count) as count"
-				}
+			if status == "success" {
+				selectExpr = "to_char(bucket_start, 'YYYY-MM-DD\"T\"HH24:MI:SS') || 'Z' as bucket, sum(total_count - error_count) as count"
+			} else if status == "error" {
+				selectExpr = "to_char(bucket_start, 'YYYY-MM-DD\"T\"HH24:MI:SS') || 'Z' as bucket, sum(error_count) as count"
+			} else {
+				selectExpr = "to_char(bucket_start, 'YYYY-MM-DD\"T\"HH24:MI:SS') || 'Z' as bucket, sum(total_count) as count"
+			}
 
 			if err := q.Select(selectExpr).Group("bucket_start").Order("bucket_start").Scan(&buckets).Error; err != nil {
 				return errResponse(ctx, fiber.StatusInternalServerError, "failed to query bucket metrics")
@@ -67,22 +69,24 @@ func TrafficSeries(db *gorm.DB, phCache *cache.PartialHourCache) fiber.Handler {
 			currentHourStart := now.Truncate(time.Hour)
 			if currentHourStart.Equal(lastBucketTime) && phCache.HasRecentData() {
 				phData := phCache.Get()
-				upKey := userID + "|" + project
-				if userID != "" && project != "" {
-					if c, ok := phData.TrafficBy30[upKey+"|"+currentHourStart.Format("2006-01-02T15:00:00")+"Z"]; ok {
-						currentHourStart := currentHourStart.Format("2006-01-02T15:00:00") + "Z"
-						buckets = append(buckets, trafficPoint{Bucket: currentHourStart, Count: c})
-					}
-				} else {
-					// When userID or project is empty, sum across all matching keys
-					var totalCount int64
-					for k, c := range phData.TrafficBy30 {
-						if matchesScope(k, userID, project) {
-							totalCount += c
+				if count, ok := partialHourTraffic(phData, userID, project, currentHourStart); ok {
+					buckets = append(buckets, trafficPoint{
+						Bucket: currentHourStart.Format("2006-01-02T15:00:00") + "Z",
+						Count:  count,
+					})
+				}
+			} else if scanner != nil {
+				// Object-store mode: there is no events table to query, so
+				// the current hour is re-read from the store. It is at most
+				// one hour of data, and it only happens when the in-memory
+				// view does not cover the hour the buckets stop at.
+				points, err := scanTrafficPoints(ctx.Context(), scanner, lastBucketTime,
+					dbpkg.ScanFilter{UserID: userID, Project: project, Status: status}, false)
+				if err == nil {
+					for _, p := range points {
+						if p.Bucket == bucketLabel(currentHourStart) {
+							buckets = append(buckets, p)
 						}
-					}
-					if totalCount > 0 {
-						buckets = append(buckets, trafficPoint{Bucket: currentHourStart.Format("2006-01-02T15:00:00") + "Z", Count: totalCount})
 					}
 				}
 			} else {
@@ -109,7 +113,26 @@ func TrafficSeries(db *gorm.DB, phCache *cache.PartialHourCache) fiber.Handler {
 			return jsonResponse(ctx, map[string]any{"series": buckets})
 		}
 
-		// Fallback to raw query for complex filters or 30-min buckets
+		// Complex filters or 30-min buckets: the rollup buckets cannot
+		// answer these, so the events themselves are read.
+		filter := dbpkg.ScanFilter{
+			UserID:  userID,
+			Project: project,
+			Status:  status,
+		}
+		if attrKey != "" && attrValue != "" && safeAttrKey.MatchString(attrKey) {
+			filter.AttrKey = attrKey
+			filter.AttrValue = attrValue
+		}
+
+		if scanner != nil {
+			points, err := scanTrafficPoints(ctx.Context(), scanner, cutoff, filter, bucket30Min)
+			if err != nil {
+				return errResponse(ctx, fiber.StatusInternalServerError, "failed to query metrics")
+			}
+			return jsonResponse(ctx, map[string]any{"series": points})
+		}
+
 		var bucketExpr string
 		if bucket30Min {
 			bucketExpr = `to_char(to_timestamp(floor(extract(epoch from created_at) / 1800) * 1800), 'YYYY-MM-DD"T"HH24:MI:SS') || 'Z'`
@@ -147,6 +170,51 @@ func TrafficSeries(db *gorm.DB, phCache *cache.PartialHourCache) fiber.Handler {
 		}
 		return jsonResponse(ctx, map[string]any{"series": rows})
 	}
+}
+
+// partialHourTraffic sums the cached partial-hour traffic for a scope,
+// reproducing what the two branches of the old cache lookup did: an exact
+// key when both user and project are known, and a scan across matching keys
+// when the request is for "everything" (an admin's all-projects view).
+func partialHourTraffic(phData *cache.PartialHourData, userID, project string, hourStart time.Time) (int64, bool) {
+	if phData == nil {
+		return 0, false
+	}
+	if userID != "" && project != "" {
+		if c, ok := phData.TrafficBy30[userID+"|"+project+"|"+hourStart.Format("2006-01-02T15:00:00")+"Z"]; ok {
+			return c, true
+		}
+		return 0, false
+	}
+	var total int64
+	for k, c := range phData.TrafficBy30 {
+		if matchesScope(k, userID, project) {
+			total += c
+		}
+	}
+	return total, total > 0
+}
+
+// partialHourAverageDuration returns the cached partial-hour mean duration
+// and its event count for a scope, used by the avg-duration panel when there
+// is no events table to average over.
+func partialHourAverageDuration(phData *cache.PartialHourData, userID, project string) (float64, int64) {
+	if phData == nil {
+		return 0, 0
+	}
+	var sum float64
+	var count int64
+	for k, n := range phData.TotalCount {
+		if !matchesScope(k, userID, project) {
+			continue
+		}
+		count += n
+		sum += phData.DurationSum[k]
+	}
+	if count == 0 {
+		return 0, 0
+	}
+	return sum / float64(count), count
 }
 
 // matchesScope checks if a cache key (format "userID|project|...") matches

@@ -23,14 +23,24 @@ const FlushInterval = 2 * time.Second
 // limit for a single multi-row INSERT (~65535 params / ~11 columns).
 const MaxBatchSize = 5000
 
-// EventSink is an optional secondary destination for ingested events.
+// EventSink is a destination for ingested events.
 //
-// Postgres is always the system of record. A sink is best-effort: it is
-// mirrored to asynchronously and a sink failure is logged, never propagated
-// to the ingest caller and never allowed to fail a Postgres write.
+// Postgres is the system of record by default. The sink abstraction covers
+// two different roles: the object store, when it is the event store, is the
+// *primary* destination — the events table is then not written at all — while
+// ClickHouse is an optional secondary mirror. A sink failure on the mirror is
+// logged and dropped; a failure on the primary re-queues the batch.
 type EventSink interface {
 	InsertEvents(ctx context.Context, events []dbpkg.Event) error
 	Close() error
+}
+
+// HotAggregator receives every batch that was successfully persisted, so an
+// in-memory view of the current hour can be maintained without re-reading the
+// store. cache.HotSource implements it; the interface lives here so this
+// package does not depend on the cache.
+type HotAggregator interface {
+	Add(events []dbpkg.Event)
 }
 
 // maxInflightSinkWrites caps concurrent mirror writes. Without it, a slow or
@@ -47,7 +57,18 @@ const maxInflightSinkWrites = 4
 type BatchWriter struct {
 	db *gorm.DB
 
-	sink     EventSink
+	// primary, when set, replaces the Postgres write entirely. It is the
+	// object store taking over as the event store.
+	primary EventSink
+
+	// sink is the optional secondary mirror (ClickHouse). It is written
+	// after the primary has accepted the batch, best-effort.
+	sink EventSink
+
+	// hot receives every batch that was persisted, for the in-memory
+	// partial-hour view.
+	hot HotAggregator
+
 	inflight atomic.Int64
 
 	mu      sync.Mutex
@@ -99,6 +120,25 @@ func (bw *BatchWriter) SetSink(sink EventSink) {
 	bw.sink = sink
 }
 
+// SetPrimary makes the object store the event store: from here on the
+// Postgres events table is not written at all, and a failure to persist a
+// batch re-queues it rather than being dropped. Like SetSink it must be
+// called during startup, before the first Submit.
+func (bw *BatchWriter) SetPrimary(primary EventSink) {
+	bw.mu.Lock()
+	defer bw.mu.Unlock()
+	bw.primary = primary
+}
+
+// SetHotAggregator installs the in-memory partial-hour accumulator. It is
+// fed only in object-store mode, where there is no SQL partial-hour query to
+// fall back on.
+func (bw *BatchWriter) SetHotAggregator(hot HotAggregator) {
+	bw.mu.Lock()
+	defer bw.mu.Unlock()
+	bw.hot = hot
+}
+
 // Stop flushes any remaining buffered events, waits briefly for in-flight
 // mirror writes, and shuts down the writer. Waiting matters: the caller
 // closes the sink right after this returns, and a mirror write landing in a
@@ -135,9 +175,13 @@ func (bw *BatchWriter) loop() {
 	}
 }
 
-// flush persists all buffered events in a single batched Create.
-// On failure the batch is re-queued so a transient connection blip
-// does not lose data.
+// flush persists all buffered events.
+//
+// The destination depends on the deployment: with a primary sink the batch
+// goes to the object store and the Postgres events table is never touched;
+// without one it goes into Postgres as a single batched Create. On failure
+// the batch is re-queued either way, so a transient connection blip does not
+// lose data.
 func (bw *BatchWriter) flush() {
 	bw.mu.Lock()
 	if len(bw.pending) == 0 {
@@ -146,9 +190,22 @@ func (bw *BatchWriter) flush() {
 	}
 	batch := bw.pending
 	bw.pending = make([]dbpkg.Event, 0, MaxBatchSize)
+	primary := bw.primary
+	hot := bw.hot
 	bw.mu.Unlock()
 
-	if err := bw.db.Create(&batch).Error; err != nil {
+	if primary != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		err := primary.InsertEvents(ctx, batch)
+		cancel()
+		if err != nil {
+			log.Printf("batch writer: failed to persist %d events to the event store: %v", len(batch), err)
+			bw.mu.Lock()
+			bw.pending = append(bw.pending, batch...)
+			bw.mu.Unlock()
+			return
+		}
+	} else if err := bw.db.Create(&batch).Error; err != nil {
 		log.Printf("batch writer: failed to persist %d events: %v", len(batch), err)
 		bw.mu.Lock()
 		bw.pending = append(bw.pending, batch...)
@@ -156,8 +213,14 @@ func (bw *BatchWriter) flush() {
 		return
 	}
 
-	// Mirror to the secondary sink only after Postgres has accepted the
-	// batch, so the mirror can never hold data Postgres does not.
+	// The live partial-hour view is fed from what was actually persisted, so
+	// it can never show an event the store rejected.
+	if hot != nil {
+		hot.Add(batch)
+	}
+
+	// Mirror to the secondary sink only after the primary has accepted the
+	// batch, so the mirror can never hold data the primary does not.
 	bw.mirror(batch)
 }
 

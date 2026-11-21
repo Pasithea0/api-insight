@@ -51,7 +51,38 @@ func AttributeKeys(db *gorm.DB) fiber.Handler {
 	}
 }
 
-func AttributeValues(db *gorm.DB) fiber.Handler {
+// virtualAttributeExpr maps a virtual (column-backed) attribute key onto the
+// value the panel shows. ok is false for a name that is not virtual, which
+// means it is an attribute key and lives in the attributes map.
+//
+// "path" and "route" resolve to the same column because events store the
+// full request path in `route` — there is no separate path column, in
+// Postgres or here.
+func virtualAttributeExpr(key string) (func(dbpkg.Event) (string, bool), bool) {
+	switch key {
+	case "remote_ip":
+		return func(ev dbpkg.Event) (string, bool) { return ev.RemoteIP, true }, true
+	case "route", "path":
+		return func(ev dbpkg.Event) (string, bool) { return ev.Route, true }, true
+	case "method":
+		return func(ev dbpkg.Event) (string, bool) { return ev.Method, true }, true
+	case "status":
+		return func(ev dbpkg.Event) (string, bool) { return strconv.Itoa(ev.Status), true }, true
+	default:
+		return nil, false
+	}
+}
+
+// attributeKeyExpr renders an attribute's value the way the JSON text
+// operator `->>` does, and reports ok=false when the key is absent — the
+// same "no row" the SQL produces from a NULL.
+func attributeKeyExpr(key string) func(dbpkg.Event) (string, bool) {
+	return func(ev dbpkg.Event) (string, bool) {
+		return attributeAsString(ev, key)
+	}
+}
+
+func AttributeValues(db *gorm.DB, raw *dbpkg.RawEvents) fiber.Handler {
 	return func(ctx *fiber.Ctx) error {
 		user, ok := handlers.MustUser(ctx)
 		if !ok {
@@ -65,6 +96,16 @@ func AttributeValues(db *gorm.DB) fiber.Handler {
 
 		project := ctx.Query("project")
 		cutoff, _ := parseRange(ctx)
+
+		if scanner, _ := raw.DefaultScanner(); scanner != nil {
+			values, err := scanDistinctValues(ctx.Context(), scanner, cutoff,
+				dbpkg.ScanFilter{UserID: userID, Project: project, AttrExists: attrKey},
+				attributeKeyExpr(attrKey))
+			if err != nil {
+				return errResponse(ctx, fiber.StatusInternalServerError, "failed to query attribute values")
+			}
+			return jsonResponse(ctx, map[string]any{"values": values})
+		}
 
 		sb := "SELECT DISTINCT events.attributes::jsonb ->> ? AS value FROM events WHERE events.created_at >= ?"
 		args := []any{attrKey, cutoff}
@@ -102,7 +143,7 @@ type attributeValueCount struct {
 	Count int64  `json:"count"`
 }
 
-func AttributeValueCounts(db *gorm.DB) fiber.Handler {
+func AttributeValueCounts(db *gorm.DB, raw *dbpkg.RawEvents) fiber.Handler {
 	return func(ctx *fiber.Ctx) error {
 		user, ok := handlers.MustUser(ctx)
 		if !ok {
@@ -133,39 +174,60 @@ func AttributeValueCounts(db *gorm.DB) fiber.Handler {
 			}
 		}
 
+		// Resolve the key first: a virtual (column-backed) name and an
+		// attribute name take different code paths in the SQL too.
+		extract, isVirtual := virtualAttributeExpr(attrKey)
+		if !isVirtual {
+			if !safeAttrKey.MatchString(attrKey) {
+				return errResponse(ctx, fiber.StatusBadRequest, "invalid key")
+			}
+			extract = attributeKeyExpr(attrKey)
+		}
+
+		filter := dbpkg.ScanFilter{UserID: userID, Project: project}
+		if !isVirtual {
+			filter.AttrExists = attrKey
+		}
+
+		if scanner, _ := raw.DefaultScanner(); scanner != nil {
+			rows, hasMore, err := scanValueCounts(ctx.Context(), scanner, cutoff, filter, extract, limit, offset)
+			if err != nil {
+				return errResponse(ctx, fiber.StatusInternalServerError, "failed to query attribute value counts")
+			}
+			counts := make([]attributeValueCount, 0, len(rows))
+			for _, row := range rows {
+				counts = append(counts, attributeValueCount{Value: row.Value, Count: row.Count})
+			}
+			return jsonResponse(ctx, map[string]any{"counts": counts, "total": 0, "has_more": hasMore})
+		}
+
 		type countRow struct {
 			Value string `json:"value"`
 			Count int64  `json:"count"`
 		}
 		var rows []countRow
-
-		// Handle virtual attributes (top-level columns)
-		var column string
-		var isStatus bool
-		switch attrKey {
-		case "remote_ip":
-			column = "remote_ip"
-		case "route":
-			column = "route"
-		case "method":
-			column = "method"
-		case "path":
-			column = "path"
-		case "status":
-			isStatus = true
-		}
-
 		hasMore := false
 
-		if column != "" {
+		if isVirtual {
+			// The virtual keys are columns, so they group directly. `path`
+			// is the one exception: there is no such column, and the SQL
+			// path errors on it, so it is served as `route` here.
+			column := attrKey
+			if column == "path" {
+				column = "route"
+			}
+			valueExpr := column + " AS value"
+			if column == "status" {
+				// status is an integer column; the panel compares strings.
+				valueExpr = "CAST(status AS TEXT) AS value"
+			}
 			q := db.Model(&dbpkg.Event{}).Where("created_at >= ?", cutoff)
 			q = scopeQueryUserID(q, userID)
 			if project != "" {
 				q = q.Where("project = ?", project)
 			}
-
 			if err := q.
-				Select(column + " AS value, COUNT(*) AS count").
+				Select(valueExpr + ", COUNT(*) AS count").
 				Group(column).
 				Order("count DESC").
 				Limit(limit + 1).
@@ -173,27 +235,7 @@ func AttributeValueCounts(db *gorm.DB) fiber.Handler {
 				Scan(&rows).Error; err != nil {
 				return errResponse(ctx, fiber.StatusInternalServerError, "failed to query virtual attribute counts")
 			}
-		} else if isStatus {
-			q := db.Model(&dbpkg.Event{}).Where("created_at >= ?", cutoff)
-			q = scopeQueryUserID(q, userID)
-			if project != "" {
-				q = q.Where("project = ?", project)
-			}
-
-			if err := q.
-				Select("CAST(status AS TEXT) AS value, COUNT(*) AS count").
-				Group("status").
-				Order("count DESC").
-				Limit(limit + 1).
-				Offset(offset).
-				Scan(&rows).Error; err != nil {
-				return errResponse(ctx, fiber.StatusInternalServerError, "failed to query virtual attribute counts")
-			}
 		} else {
-			if !safeAttrKey.MatchString(attrKey) {
-				return errResponse(ctx, fiber.StatusBadRequest, "invalid key")
-			}
-
 			dataSQL := "SELECT events.attributes::jsonb ->> ? AS value, COUNT(*) AS count FROM events WHERE events.created_at >= ?"
 			args := []any{attrKey, cutoff}
 			if userID != "" {
@@ -220,7 +262,7 @@ func AttributeValueCounts(db *gorm.DB) fiber.Handler {
 		for _, row := range rows {
 			counts = append(counts, attributeValueCount{Value: row.Value, Count: row.Count})
 		}
-		
+
 		return jsonResponse(ctx, map[string]any{"counts": counts, "total": 0, "has_more": hasMore})
 	}
 }

@@ -1,6 +1,7 @@
 package metrics
 
 import (
+	"context"
 	"strconv"
 	"strings"
 	"time"
@@ -82,19 +83,35 @@ func requestedRangeLabel(ctx *fiber.Ctx) string {
 	return "1d"
 }
 
-func queryTopRoutes(db *gorm.DB, params topRoutesQuery) (topRoutesResult, error) {
+// routeFilter is the shared predicate for both top-routes reads, so the
+// rollup path and the raw-events path cannot disagree about what "matching"
+// means.
+func routeFilter(params topRoutesQuery) dbpkg.ScanFilter {
+	filter := dbpkg.ScanFilter{
+		UserID:  params.OwnerUserID,
+		Project: params.Project,
+		Status:  params.Status,
+	}
+	if params.AttrKey != "" && params.AttrValue != "" && safeAttrKey.MatchString(params.AttrKey) {
+		filter.AttrKey = params.AttrKey
+		filter.AttrValue = params.AttrValue
+	}
+	return filter
+}
+
+func queryTopRoutes(ctx context.Context, db *gorm.DB, raw *dbpkg.RawEvents, params topRoutesQuery) (topRoutesResult, error) {
 	hasAttrFilter := params.AttrKey != "" && params.AttrValue != ""
 
 	// Fast path: use pre-aggregated RouteBucket data (no attribute filters)
 	if !hasAttrFilter {
-		return queryTopRoutesFromBuckets(db, params)
+		return queryTopRoutesFromBuckets(ctx, db, raw, params)
 	}
 
 	// Fallback: use raw events for attribute-filtered queries
-	return queryTopRoutesFromEvents(db, params)
+	return queryTopRoutesFromEvents(ctx, db, raw, params)
 }
 
-func queryTopRoutesFromBuckets(db *gorm.DB, params topRoutesQuery) (topRoutesResult, error) {
+func queryTopRoutesFromBuckets(ctx context.Context, db *gorm.DB, raw *dbpkg.RawEvents, params topRoutesQuery) (topRoutesResult, error) {
 	bucketCutoff := params.Cutoff.UTC().Truncate(time.Hour)
 	limit := params.Limit
 	offset := params.Offset
@@ -143,7 +160,7 @@ func queryTopRoutesFromBuckets(db *gorm.DB, params topRoutesQuery) (topRoutesRes
 	}
 
 	type scBucketRow struct {
-		Route       string
+		Route        string
 		StatusCounts datatypes.JSONMap
 	}
 	var scRows []scBucketRow
@@ -166,8 +183,7 @@ func queryTopRoutesFromBuckets(db *gorm.DB, params topRoutesQuery) (topRoutesRes
 	}
 	meta := make([]routeMeta, len(bucketRows))
 	for i, r := range bucketRows {
-		m := routeMeta{route: r.Route, count: r.Count, statuses: make(map[int]int64)}
-		meta[i] = m
+		meta[i] = routeMeta{route: r.Route, count: r.Count, statuses: map[int]int64{}}
 	}
 	for _, sc := range scRows {
 		idx, ok := routeIdx[sc.Route]
@@ -192,26 +208,45 @@ func queryTopRoutesFromBuckets(db *gorm.DB, params topRoutesQuery) (topRoutesRes
 		}
 	}
 	if len(fallbackRoutes) > 0 {
-		type fsRow struct {
-			Route  string
-			Status int
-			Count  int64
-		}
-		var fsRows []fsRow
-		fq := db.Model(&dbpkg.Event{}).
-			Where("created_at >= ?", params.Cutoff).
-			Where("route IN ?", fallbackRoutes)
-		fq = scopeQueryUserID(fq, params.OwnerUserID)
-		if params.Project != "" {
-			fq = fq.Where("project = ?", params.Project)
-		}
-		if err := fq.Select("route, status, COUNT(*) as count").
-			Group("route, status").Scan(&fsRows).Error; err != nil {
-			return topRoutesResult{}, err
-		}
-		for _, r := range fsRows {
-			if idx, ok := routeIdx[r.Route]; ok {
-				meta[idx].statuses[r.Status] += r.Count
+		if scanner, _ := raw.DefaultScanner(); scanner != nil {
+			// No events table to query, but the object store has the same
+			// data: one scan of the range, then keep only the routes that
+			// came back without a status breakdown.
+			groups, err := scanRouteGroups(ctx, scanner, params.Cutoff, routeFilter(params))
+			if err != nil {
+				return topRoutesResult{}, err
+			}
+			for _, route := range fallbackRoutes {
+				if idx, ok := routeIdx[route]; ok {
+					if g, ok := groups[route]; ok {
+						for code, count := range g.Statuses {
+							meta[idx].statuses[code] += count
+						}
+					}
+				}
+			}
+		} else {
+			type fsRow struct {
+				Route  string
+				Status int
+				Count  int64
+			}
+			var fsRows []fsRow
+			fq := db.Model(&dbpkg.Event{}).
+				Where("created_at >= ?", params.Cutoff).
+				Where("route IN ?", fallbackRoutes)
+			fq = scopeQueryUserID(fq, params.OwnerUserID)
+			if params.Project != "" {
+				fq = fq.Where("project = ?", params.Project)
+			}
+			if err := fq.Select("route, status, COUNT(*) as count").
+				Group("route, status").Scan(&fsRows).Error; err != nil {
+				return topRoutesResult{}, err
+			}
+			for _, r := range fsRows {
+				if idx, ok := routeIdx[r.Route]; ok {
+					meta[idx].statuses[r.Status] += r.Count
+				}
 			}
 		}
 	}
@@ -245,7 +280,16 @@ func queryTopRoutesFromBuckets(db *gorm.DB, params topRoutesQuery) (topRoutesRes
 	}, nil
 }
 
-func queryTopRoutesFromEvents(db *gorm.DB, params topRoutesQuery) (topRoutesResult, error) {
+func queryTopRoutesFromEvents(ctx context.Context, db *gorm.DB, raw *dbpkg.RawEvents, params topRoutesQuery) (topRoutesResult, error) {
+	if scanner, _ := raw.DefaultScanner(); scanner != nil {
+		groups, err := scanRouteGroups(ctx, scanner, params.Cutoff, routeFilter(params))
+		if err != nil {
+			return topRoutesResult{}, err
+		}
+		rows, hasMore := routeGroupsToTopRoutes(groups, params.Status, params.Limit, params.Offset)
+		return topRoutesResult{Routes: rows, HasMore: hasMore}, nil
+	}
+
 	q := db.Model(&dbpkg.Event{}).
 		Where("created_at >= ?", params.Cutoff)
 	q = scopeQueryUserID(q, params.OwnerUserID)
@@ -315,7 +359,7 @@ func queryTopRoutesFromEvents(db *gorm.DB, params topRoutesQuery) (topRoutesResu
 	}, nil
 }
 
-func TopRoutes(db *gorm.DB) fiber.Handler {
+func TopRoutes(db *gorm.DB, raw *dbpkg.RawEvents) fiber.Handler {
 	return func(ctx *fiber.Ctx) error {
 		user, ok := handlers.MustUser(ctx)
 		if !ok {
@@ -335,7 +379,7 @@ func TopRoutes(db *gorm.DB) fiber.Handler {
 			}
 		}
 
-		result, err := queryTopRoutes(db, topRoutesQuery{
+		result, err := queryTopRoutes(ctx.Context(), db, raw, topRoutesQuery{
 			OwnerUserID: userID,
 			Project:     project,
 			Cutoff:      cutoff,
@@ -357,7 +401,7 @@ func TopRoutes(db *gorm.DB) fiber.Handler {
 	}
 }
 
-func PublicTopRoutes(db *gorm.DB) fiber.Handler {
+func PublicTopRoutes(db *gorm.DB, raw *dbpkg.RawEvents) fiber.Handler {
 	return func(ctx *fiber.Ctx) error {
 		apiKey, ok := httpctx.APIKeyFromCtx(ctx)
 		if !ok || apiKey == nil {
@@ -368,7 +412,7 @@ func PublicTopRoutes(db *gorm.DB) fiber.Handler {
 		status := normalizeStatusFilter(ctx.Query("status"))
 		count := parsePositiveInt(ctx.Query("count"), 20, 100)
 
-		result, err := queryTopRoutes(db, topRoutesQuery{
+		result, err := queryTopRoutes(ctx.Context(), db, raw, topRoutesQuery{
 			OwnerUserID: strconv.Itoa(int(apiKey.UserID)),
 			Project:     apiKey.Name,
 			Cutoff:      cutoff,

@@ -11,12 +11,28 @@ import (
 // PartialHourCache provides in-memory cached aggregates for the current
 // (incomplete) hour, refreshed every 30 seconds. This eliminates repeated
 // raw-events-table partial-hour queries on every dashboard load.
+//
+// It has two sources. The default reads the Postgres events table, which is
+// correct when Postgres holds the raw stream. When the events live in an
+// object store there is nothing in Postgres to read, so the cache is fed
+// instead by a PartialHourProvider that accumulates the same aggregates from
+// the ingest stream — see cache.HotSource. Either way the data it serves has
+// the same shape, so the panels do not know the difference.
 type PartialHourCache struct {
 	mu          sync.RWMutex
 	db          *gorm.DB
+	provider    PartialHourProvider
 	data        *PartialHourData
 	lastRefresh time.Time
 	stopCh      chan struct{}
+}
+
+// PartialHourProvider supplies pre-computed aggregates for the current hour.
+type PartialHourProvider interface {
+	// PartialHour returns the aggregates for the hour containing now. It
+	// must never block: it is called from the refresh loop and from request
+	// handlers.
+	PartialHour(now time.Time) *PartialHourData
 }
 
 // PartialHourData holds pre-computed aggregates for the current partial hour.
@@ -30,9 +46,9 @@ type PartialHourData struct {
 	DurationSum map[string]float64
 
 	// Route-level counts keyed by "userID|project|route"
-	RouteCount    map[string]int64
-	RouteError    map[string]int64
-	RouteDurSum   map[string]float64
+	RouteCount  map[string]int64
+	RouteError  map[string]int64
+	RouteDurSum map[string]float64
 
 	// Events for recent-events queries (capped at 200 per user/project)
 	Events []EventPHData
@@ -54,10 +70,22 @@ type EventPHData struct {
 
 // NewPartialHourCache creates a cache and starts the background refresh loop.
 func NewPartialHourCache(db *gorm.DB, refreshInterval time.Duration) *PartialHourCache {
+	return newPartialHourCache(db, nil, refreshInterval)
+}
+
+// NewPartialHourCacheFromProvider creates a cache that is fed by a provider
+// instead of by SQL. It is the object-store mode: the aggregates are
+// accumulated from the ingest stream, so there is nothing to query.
+func NewPartialHourCacheFromProvider(provider PartialHourProvider, refreshInterval time.Duration) *PartialHourCache {
+	return newPartialHourCache(nil, provider, refreshInterval)
+}
+
+func newPartialHourCache(db *gorm.DB, provider PartialHourProvider, refreshInterval time.Duration) *PartialHourCache {
 	c := &PartialHourCache{
-		db:     db,
-		data:   &PartialHourData{},
-		stopCh: make(chan struct{}),
+		db:       db,
+		provider: provider,
+		data:     &PartialHourData{},
+		stopCh:   make(chan struct{}),
 	}
 	// Initial fill
 	c.refresh()
@@ -92,6 +120,23 @@ func (c *PartialHourCache) Get() *PartialHourData {
 // refresh runs the aggregation queries for the current partial hour.
 func (c *PartialHourCache) refresh() {
 	now := time.Now().UTC()
+	if c.provider != nil {
+		data := c.provider.PartialHour(now)
+		if data == nil {
+			return
+		}
+		c.mu.Lock()
+		c.data = data
+		c.lastRefresh = now
+		c.mu.Unlock()
+		return
+	}
+	c.refreshFromDB(now)
+}
+
+// refreshFromDB is the SQL source: three grouped queries against the
+// Postgres events table.
+func (c *PartialHourCache) refreshFromDB(now time.Time) {
 	hourStart := now.Truncate(time.Hour)
 
 	data := &PartialHourData{
@@ -107,12 +152,12 @@ func (c *PartialHourCache) refresh() {
 
 	// 1. Traffic grouped by user, project, and 30-min bucket, plus totals
 	type trafficRow struct {
-		UserID    string
-		Project   string
-		Epoch30   int64
-		Total     int64
-		Errors    int64
-		DurSum    float64
+		UserID  string
+		Project string
+		Epoch30 int64
+		Total   int64
+		Errors  int64
+		DurSum  float64
 	}
 	var traffic []trafficRow
 	if err := c.db.Raw(`
@@ -141,12 +186,12 @@ func (c *PartialHourCache) refresh() {
 
 	// 2. Route-level counts
 	type routeRow struct {
-		UserID    string
-		Project   string
-		Route     string
-		Status    int
-		Total     int64
-		DurSum    float64
+		UserID  string
+		Project string
+		Route   string
+		Status  int
+		Total   int64
+		DurSum  float64
 	}
 	var routes []routeRow
 	if err := c.db.Raw(`
@@ -229,7 +274,15 @@ func formatEpoch30(epoch int64) string {
 
 // HasRecentData returns true if the cache was refreshed within the last
 // refresh interval + 5s grace period.
+//
+// A provider-fed cache is always current — it is written by the ingest path
+// itself, not polled — so it reports true unconditionally. That matters
+// because callers treat a false here as "fall back to a raw database query",
+// and on an object store there is no database query to fall back to.
 func (c *PartialHourCache) HasRecentData() bool {
+	if c.provider != nil {
+		return true
+	}
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return time.Since(c.lastRefresh) < 35*time.Second

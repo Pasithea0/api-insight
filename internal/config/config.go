@@ -1,6 +1,7 @@
 package config
 
 import (
+	"log"
 	"os"
 	"strconv"
 	"strings"
@@ -101,6 +102,80 @@ type Config struct {
 	// days after it is enabled it holds less history than Postgres.
 	// Overridable per request with ?store=clickhouse|postgres.
 	ClickHouseReadSource string
+
+	// --- Event storage backend ---
+	//
+	// EventStore selects where RAW events live: "postgres" (default) writes
+	// them into the `events` table, "s3" writes them to an S3-compatible
+	// object store (Backblaze B2, MinIO, AWS S3) and leaves the Postgres
+	// table empty.
+	//
+	// Postgres remains the system of record either way: users, API keys,
+	// sessions and the pre-aggregated rollup tables (metric_buckets,
+	// route_buckets, daily_*) always live there, because they are small and
+	// the dashboard reads them. Only the raw event stream — the part that
+	// grows by millions of rows a day — moves.
+	EventStore string
+
+	// S3Endpoint is the S3-compatible endpoint URL, e.g.
+	// https://s3.us-east-005.backblazeb2.com
+	S3Endpoint string
+
+	// S3Region is the signing region. Backblaze B2 reports it as part of the
+	// endpoint (e.g. us-east-005); MinIO and most S3 clones accept anything.
+	S3Region string
+
+	// S3Bucket is the bucket that holds the event objects.
+	S3Bucket string
+
+	// S3AccessKeyID / S3SecretAccessKey are the S3 credentials. On B2 these
+	// are the application key ID and the application key.
+	S3AccessKeyID     string
+	S3SecretAccessKey string
+
+	// S3Prefix is the key prefix every object is written under. Default:
+	// "events".
+	S3Prefix string
+
+	// S3PathStyle forces path-style addressing (bucket in the path rather
+	// than the host). B2 and MinIO both want this; AWS S3 does not.
+	// Default: true.
+	S3PathStyle bool
+
+	// S3FlushInterval is how long ingested events are buffered before being
+	// written to one object per hour bucket. Longer means fewer, larger
+	// objects and cheaper listing; shorter means fresher data. Default: 30s.
+	S3FlushInterval time.Duration
+
+	// S3MaxBufferEvents caps the in-memory buffer. Reaching it forces an
+	// immediate flush so a burst cannot grow memory without bound.
+	// Default: 200000.
+	S3MaxBufferEvents int
+
+	// S3StartupScanHours is how many completed hours the rollup worker
+	// re-reads from the object store at startup. It exists because the
+	// object store has no SQL, so a restart cannot recompute a missing hour
+	// any other way. Default: 24 (matching the Postgres path).
+	S3StartupScanHours int
+
+	// S3ReadTimeout bounds one object read. Default: 30s.
+	S3ReadTimeout time.Duration
+}
+
+// Event store names, as accepted by APP_EVENT_STORE.
+const (
+	EventStorePostgres = "postgres"
+	EventStoreS3       = "s3"
+)
+
+// S3Enabled reports whether raw events are stored in the object store.
+func (c *Config) S3Enabled() bool { return c.EventStore == EventStoreS3 }
+
+// S3Configured reports whether every setting needed to open the object store
+// is present. APP_EVENT_STORE=s3 without credentials is a misconfiguration,
+// and the caller degrades to Postgres rather than starting broken.
+func (c *Config) S3Configured() bool {
+	return c.S3Bucket != "" && c.S3Endpoint != "" && c.S3AccessKeyID != "" && c.S3SecretAccessKey != ""
 }
 
 // Load reads configuration from environment variables and applies
@@ -176,6 +251,56 @@ func Load() *Config {
 	cfg.ClickHouseReadSource = strings.ToLower(strings.TrimSpace(getenv("APP_CLICKHOUSE_READ_SOURCE", "postgres")))
 	if cfg.ClickHouseReadSource != "clickhouse" {
 		cfg.ClickHouseReadSource = "postgres"
+	}
+
+	// Event storage backend. Defaults to Postgres, so an existing deployment
+	// that sets nothing behaves exactly as before.
+	cfg.EventStore = strings.ToLower(strings.TrimSpace(getenv("APP_EVENT_STORE", EventStorePostgres)))
+	if cfg.EventStore != EventStoreS3 {
+		cfg.EventStore = EventStorePostgres
+	}
+
+	cfg.S3Endpoint = strings.TrimRight(strings.TrimSpace(os.Getenv("APP_S3_ENDPOINT")), "/")
+	cfg.S3Region = strings.TrimSpace(getenv("APP_S3_REGION", "us-east-1"))
+	cfg.S3Bucket = strings.TrimSpace(os.Getenv("APP_S3_BUCKET"))
+	cfg.S3AccessKeyID = strings.TrimSpace(os.Getenv("APP_S3_ACCESS_KEY_ID"))
+	cfg.S3SecretAccessKey = strings.TrimSpace(os.Getenv("APP_S3_SECRET_ACCESS_KEY"))
+	cfg.S3Prefix = strings.Trim(strings.TrimSpace(getenv("APP_S3_PREFIX", "events")), "/")
+	if cfg.S3Prefix == "" {
+		cfg.S3Prefix = "events"
+	}
+	cfg.S3PathStyle = true
+	if v := os.Getenv("APP_S3_PATH_STYLE"); v != "" {
+		cfg.S3PathStyle = v == "true" || v == "1" || v == "yes"
+	}
+	cfg.S3FlushInterval = 30 * time.Second
+	if d, ok := durationEnv("APP_S3_FLUSH_INTERVAL"); ok && d > 0 {
+		cfg.S3FlushInterval = d
+	}
+	cfg.S3MaxBufferEvents = 200000
+	if v := os.Getenv("APP_S3_MAX_BUFFER_EVENTS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.S3MaxBufferEvents = n
+		}
+	}
+	cfg.S3StartupScanHours = 24
+	if v := os.Getenv("APP_S3_STARTUP_SCAN_HOURS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			cfg.S3StartupScanHours = n
+		}
+	}
+	cfg.S3ReadTimeout = 30 * time.Second
+	if d, ok := durationEnv("APP_S3_READ_TIMEOUT"); ok && d > 0 {
+		cfg.S3ReadTimeout = d
+	}
+
+	// A half-configured object store is a mistake that would silently drop
+	// every event once the process accepted it, so it is refused here and
+	// the service keeps writing to Postgres instead.
+	if cfg.EventStore == EventStoreS3 && !cfg.S3Configured() {
+		log.Printf("event store: APP_EVENT_STORE=s3 but the bucket, endpoint or credentials are missing; " +
+			"falling back to postgres so ingested events are not lost")
+		cfg.EventStore = EventStorePostgres
 	}
 
 	cfg.SessionSecret = strings.TrimSpace(os.Getenv("APP_SESSION_SECRET"))
