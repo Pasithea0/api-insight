@@ -75,42 +75,62 @@ func (r *RetentionResolver) refresh() {
 	if r == nil || r.db == nil {
 		return
 	}
-	type row struct {
-		UserID        uint
-		Name          string
-		RetentionDays int
-	}
-	var rows []row
+	var rows []keyRetentionRow
 	if err := r.db.Model(&APIKey{}).
 		Select("user_id, name, retention_days").
 		Scan(&rows).Error; err != nil {
 		return
 	}
 
-	byProject := make(map[string]int, len(rows))
-	maxDays := r.defaultDays
-	for _, k := range rows {
-		eff := k.RetentionDays
-		if eff <= 0 {
-			eff = r.defaultDays
-		}
-		key := retentionKey(strconv.Itoa(int(k.UserID)), k.Name)
-		// Two keys can share a name (prod + staging). They share one event
-		// namespace, so the namespace honours the longest window either
-		// asks for — mirrors EffectiveProjectRetention.
-		if eff > byProject[key] {
-			byProject[key] = eff
-		}
-		if eff > maxDays {
-			maxDays = eff
-		}
-	}
+	// Group the keys by the namespace they write into, then resolve each
+	// namespace to the longest window its keys ask for.
+	//
+	// A namespace's window is computed with LongestRetentionWindow rather than
+	// a `>` loop because 0 means unlimited: with `>`, an unlimited key reads as
+	// the narrowest value in the group and loses to any finite sibling, so a
+	// project set to keep everything would be served as if it kept a week.
+	byProject, maxDays := resolveRetentionWindows(rows, r.defaultDays)
 
 	r.mu.Lock()
 	r.byProject = byProject
 	r.maxDays = maxDays
 	r.loadedAt = time.Now()
 	r.mu.Unlock()
+}
+
+// keyRetentionRow is one API key as the resolver sees it.
+type keyRetentionRow struct {
+	UserID        uint
+	Name          string
+	RetentionDays int
+}
+
+// resolveRetentionWindows folds every key into the window its namespace
+// honours, plus the widest window in play.
+//
+// The widest is what the object store uses to decide when a whole hour bucket
+// is safe to delete: nothing may go while any project could still want it.
+//
+// Split out from the query so the fold can be tested without a database, which
+// matters because getting it wrong is silent — the symptom is a project
+// quietly served a shorter window than it was promised, not an error.
+func resolveRetentionWindows(rows []keyRetentionRow, defaultDays int) (map[string]int, int) {
+	grouped := make(map[string][]int, len(rows))
+	for _, r := range rows {
+		key := retentionKey(strconv.Itoa(int(r.UserID)), r.Name)
+		grouped[key] = append(grouped[key], r.RetentionDays)
+	}
+
+	byProject := make(map[string]int, len(grouped))
+	widest := defaultDays
+	for key, days := range grouped {
+		window := LongestRetentionWindow(defaultDays, days)
+		byProject[key] = window
+		if RetentionWider(window, widest) {
+			widest = window
+		}
+	}
+	return byProject, widest
 }
 
 // ensureFresh reloads the snapshot when it has aged out.
@@ -129,6 +149,11 @@ func (r *RetentionResolver) ensureFresh() {
 // ProjectRetentionDays implements ProjectRetentionLookup. An unknown project
 // gets the default window: a project with no API key left still has stored
 // events, and the safe reading of "no policy" is the global one.
+//
+// The stored value is returned as-is, including 0. It has already had the
+// default applied to deferring keys, and 0 there means unlimited — turning it
+// back into the default would resurrect a finite window for a project whose
+// keys asked to keep everything.
 func (r *RetentionResolver) ProjectRetentionDays(userID, project string) int {
 	if r == nil {
 		return 0
@@ -136,7 +161,7 @@ func (r *RetentionResolver) ProjectRetentionDays(userID, project string) int {
 	r.ensureFresh()
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	if days, ok := r.byProject[retentionKey(userID, project)]; ok && days > 0 {
+	if days, ok := r.byProject[retentionKey(userID, project)]; ok {
 		return days
 	}
 	return r.defaultDays
@@ -151,6 +176,10 @@ func (r *RetentionResolver) DefaultRetentionDays() int {
 }
 
 // MaxRetentionDays implements ProjectRetentionLookup.
+//
+// 0 is a real answer (unlimited) rather than a missing one, so it is returned
+// as-is. Falling back to the default here would resurrect a finite window and
+// start deleting objects a project had asked to keep forever.
 func (r *RetentionResolver) MaxRetentionDays() int {
 	if r == nil {
 		return 0
@@ -158,8 +187,5 @@ func (r *RetentionResolver) MaxRetentionDays() int {
 	r.ensureFresh()
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	if r.maxDays <= 0 {
-		return r.defaultDays
-	}
 	return r.maxDays
 }

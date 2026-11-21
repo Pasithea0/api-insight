@@ -64,18 +64,12 @@ func EffectiveProjectRetention(db *gorm.DB, userID uint, project string, fallbac
 		return 0, err
 	}
 
-	window := 0
+	keyDays := make([]int, 0, len(keys))
 	for _, k := range keys {
-		eff := k.RetentionDays
-		if eff <= 0 {
-			eff = fallback
-		}
-		if eff > window {
-			window = eff
-		}
+		keyDays = append(keyDays, k.RetentionDays)
 	}
-	if window <= 0 {
-		window = fallback
-	}
-	return window, nil
+	// LongestRetentionWindow, not a `>` loop: 0 now means unlimited as well as
+	// "defer to the default", so a sibling key set to keep everything must win
+	// over a finite number rather than losing to it.
+	return LongestRetentionWindow(fallback, keyDays), nil
 }

@@ -68,6 +68,33 @@ func getLayoutData(ctx *fiber.Ctx, cfg *config.Config, activePage, breadcrumb, p
 	}
 }
 
+// unlimitedChartMaxDays is the range selector's own ceiling when the data has
+// no expiry. It is a dropdown limit, not a retention policy: the API accepts
+// any days= or hours= value.
+const unlimitedChartMaxDays = 365
+
+// effectiveRetentionWindow resolves the window one key's events live under.
+// A key asking for nothing (0) inherits the configured default, and that
+// default is itself unlimited when APP_RETENTION_DAYS=0.
+func effectiveRetentionWindow(keyDays, defaultDays int) int {
+	if keyDays > 0 {
+		return keyDays
+	}
+	return defaultDays
+}
+
+// chartMaxDays turns a retention window into the largest range the chart
+// selector should offer.
+//
+// It never returns 0, which is what lets its callers use 0 to mean "not
+// decided yet" without colliding with the unlimited sentinel.
+func chartMaxDays(windowDays int) int {
+	if windowDays <= 0 {
+		return unlimitedChartMaxDays
+	}
+	return windowDays
+}
+
 func populateProjectsForLayout(data *LayoutData, db *gorm.DB, cfg *config.Config, ctx *fiber.Ctx, activeProject string) {
 	if u, ok := httpctx.UserFromCtx(ctx); ok {
 		if user, ok := u.(*dbpkg.User); ok && user != nil {
@@ -75,42 +102,51 @@ func populateProjectsForLayout(data *LayoutData, db *gorm.DB, cfg *config.Config
 			if err := db.Where("user_id = ?", user.ID).Order("name, environment").Find(&keys).Error; err == nil {
 				seen := make(map[string]bool)
 				projects := make([]ProjectNav, 0, len(keys))
-				allMax := 0
-				perProjectMax := make(map[string]int)
+
+				// The window each project namespace honours, and the widest of
+				// them. Neither can be compared with a plain >: 0 means
+				// unlimited, which reads as the *narrowest* value under >, so
+				// an unlimited project beside a 7-day one would silently cap
+				// the chart at a week.
+				perProject := make(map[string]int, len(keys))
+				widest := 0
+				haveWidest := false
+
 				for _, k := range keys {
-					eff := k.RetentionDays
-					if eff <= 0 {
-						eff = cfg.RetentionDays
+					window := effectiveRetentionWindow(k.RetentionDays, cfg.RetentionDays)
+					if !haveWidest || dbpkg.RetentionWider(window, widest) {
+						widest = window
+						haveWidest = true
 					}
-					if eff > allMax {
-						allMax = eff
-					}
-					if eff > perProjectMax[k.Name] {
-						perProjectMax[k.Name] = eff
+					if cur, ok := perProject[k.Name]; !ok || dbpkg.RetentionWider(window, cur) {
+						perProject[k.Name] = window
 					}
 					if !seen[k.Name] {
 						seen[k.Name] = true
 						projects = append(projects, ProjectNav{Name: k.Name, Environment: k.Environment})
 					}
 				}
+
 				data.Projects = projects
+
 				if activeProject != "" {
-					data.ChartMaxDays = perProjectMax[activeProject]
+					if window, ok := perProject[activeProject]; ok {
+						data.ChartMaxDays = chartMaxDays(window)
+					}
 				}
 				if data.ChartMaxDays == 0 {
-					data.ChartMaxDays = allMax
+					if haveWidest {
+						data.ChartMaxDays = chartMaxDays(widest)
+					} else {
+						// No keys at all: the configured window is all there is.
+						data.ChartMaxDays = chartMaxDays(cfg.RetentionDays)
+					}
 				}
 			}
 		}
 	}
 	if data.ChartMaxDays == 0 {
-		data.ChartMaxDays = cfg.RetentionDays
-	}
-	if data.ChartMaxDays <= 0 {
-		// Unlimited retention (or a project with no window at all). The chart
-		// range selector still has to offer *something*, so it offers a year:
-		// the API accepts any range, this is only the dropdown's ceiling.
-		data.ChartMaxDays = 365
+		data.ChartMaxDays = chartMaxDays(cfg.RetentionDays)
 	}
 }
 
